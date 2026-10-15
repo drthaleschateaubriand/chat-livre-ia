@@ -199,7 +199,7 @@ export class OpenAICompatProvider implements Provider {
         }
       }
       await reader.cancel().catch(() => {});
-      if (!sawContent) throw new ProviderError("server", "resposta vazia do provedor", res.status);
+      if (!sawContent) throw new ProviderError("empty", "resposta vazia do provedor", res.status);
     } finally {
       clearTimeout(timer);
       opts.signal?.removeEventListener("abort", onAbort);

@@ -53,8 +53,8 @@ export function cooldownFor(e: ProviderError): { ms: number; explicit: boolean; 
       return { ms: 6 * HOUR, explicit: true, scope: "model" };
     case "too_large":
       return { ms: 30_000, explicit: true, scope: "model" };
-    default:
-      return { ms: 30_000, explicit: false, scope: "model" };
+    default: // server | empty | timeout | network: cooldown curto que escala com falhas consecutivas (ver store)
+      return { ms: 10_000, explicit: false, scope: "model" };
   }
 }
 
@@ -137,7 +137,9 @@ export class ProviderManager {
     let n = 0;
     const inChars = messages.reduce((a, m) => a + m.content.length, 0);
     const failedProviders = new Set<string>();
-    for (const c of candidates) {
+    const emptyRetried = new Set<string>();
+    for (let ci = 0; ci < candidates.length; ci++) {
+      const c = candidates[ci];
       if (n >= max) break;
       // sem martelar um provedor que acabou de falhar (limite/5xx/timeout): pula seus outros modelos nesta requisição
       if (failedProviders.has(c.p.id)) continue;
@@ -170,6 +172,12 @@ export class ProviderManager {
       } catch (err) {
         const e = err instanceof ProviderError ? err : new ProviderError("network", (err as Error)?.message ?? "erro");
         if (e.kind === "aborted") { yield { type: "aborted" }; return; }
+        if (e.kind === "empty" && text === 0 && !emptyRetried.has(c.p.id)) {
+          // resposta vazia costuma ser transitória: UMA nova tentativa no mesmo modelo, sem registrar cooldown
+          emptyRetried.add(c.p.id);
+          n--; ci--;
+          continue;
+        }
         const cf = cooldownFor(e);
         await this.d.store.failure(c.p.id, c.m.id, { status: e.status, kind: e.kind, message: e.message.slice(0, 300), cooldownMs: cf.ms, explicit: cf.explicit, scope: cf.scope });
         tried.push({ provider: c.p.id, model: c.m.id, kind: e.kind, status: e.status });

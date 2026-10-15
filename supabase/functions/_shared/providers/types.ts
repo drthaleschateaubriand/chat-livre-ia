@@ -19,7 +19,7 @@ export type StreamPart =
   | { type: "usage"; tin?: number; tout?: number }
   | { type: "headers"; info: Record<string, string> };
 
-export type ErrorKind = "rate_limit" | "auth" | "bad_model" | "too_large" | "quota" | "server" | "timeout" | "network" | "aborted";
+export type ErrorKind = "rate_limit" | "auth" | "bad_model" | "too_large" | "quota" | "server" | "empty" | "timeout" | "network" | "aborted";
 
 export class ProviderError extends Error {
   constructor(

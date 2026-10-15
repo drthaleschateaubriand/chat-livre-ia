@@ -237,3 +237,22 @@ describe('OpenAICompatProvider (HTTP local)', () => {
     expect(hits['/limited']).toBe(before)
   })
 })
+
+describe('resposta vazia', () => {
+  it('uma nova tentativa no mesmo modelo; se persistir, vira falha com cooldown curto', async () => {
+    let calls = 0
+    const a = fake('a', 10, () => { calls++; return calls === 1 ? new ProviderError('empty', 'vazia') : text('A') })
+    const store = new MemStore()
+    const m = new ProviderManager({ providers: [a], getKey: async () => 'k', store })
+    const ev = await collect(m)
+    expect(ev.find((e) => e.type === 'done')).toMatchObject({ provider: 'a' })
+    expect(calls).toBe(2)
+    expect(store.fails).toHaveLength(0)
+    let c2 = 0
+    const b = fake('b', 10, () => { c2++; return new ProviderError('empty', 'vazia') })
+    const m2 = new ProviderManager({ providers: [b], getKey: async () => 'k', store: new MemStore() })
+    const ev2 = await collect(m2)
+    expect(c2).toBe(2)
+    expect(ev2[ev2.length - 1].type).toBe('exhausted')
+  })
+})

@@ -224,9 +224,12 @@ for (let i = 0; i < 4; i++) {
   convL = convL ?? r.events.find((e) => e.event === "meta")?.data.conversation_id;
   if (!doneText(r)) { check(`mensagem longa ${i + 1} respondida`, false, JSON.stringify(r.events.slice(-1))); break; }
 }
-await sleep(8000);
-const expL = await call("data", "export.all", {}, tA1);
-const cL = expL.json.conversations.find((c) => c.id === convL);
+let cL = null;
+for (let k = 0; k < 14 && !cL?.summary; k++) {
+  await sleep(5000); // o resumo roda em segundo plano (EdgeRuntime.waitUntil) e leva alguns segundos
+  const expL = await call("data", "export.all", {}, tA1);
+  cL = expL.json.conversations.find((c) => c.id === convL);
+}
 check("resumo automático gerado e gravado na conversa longa", !!cL?.summary && cL.summary.length > 20, JSON.stringify(cL?.summary ?? null).slice(0, 200));
 const ctxAns = await chat(tA1, { conversation_id: convL, content: "Qual foi o número da PRIMEIRA mensagem que eu enviei nesta conversa? Responda só o número.", model: "auto" });
 console.log("  resposta usando contexto resumido:", (doneText(ctxAns)?.content ?? "").slice(0, 120).replace(/\n/g, " "));
