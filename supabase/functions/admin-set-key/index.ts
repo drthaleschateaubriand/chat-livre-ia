@@ -1,11 +1,11 @@
 // Edge Function `admin-set-key`: o DONO cadastra/remove chaves de provedores sem expô-las no chat.
 // Autenticação: cabeçalho `x-admin-token` comparado (hash SHA-256, tempo constante) com ADMIN_TOKEN_HASH em server_secrets.
-// Corpo: { action: "set"|"delete"|"status"|"clear-cooldown", provider: "groq"|"gemini"|"openrouter", key?: string, validate?: boolean }
+// Corpo: { action: "set"|"delete"|"status"|"clear-cooldown"|"pause" (+ seconds), provider: "groq"|"gemini"|"openrouter", key?: string, validate?: boolean }
 import { db, invalidateSecret, requireSecret } from "../_shared/db.ts";
 import { sha256Hex, timingSafeEqual } from "../_shared/crypto.ts";
 import { HttpError, json, readJson, serve } from "../_shared/http.ts";
 import { ipHash, rateHit, ratePeek, tooMany } from "../_shared/session.ts";
-import { KEY_SECRET } from "../_shared/providers/registry.ts";
+import { KEY_SECRET, PROVIDER_IDS } from "../_shared/providers/registry.ts";
 
 const CHECKS: Record<string, (key: string) => Promise<boolean>> = {
   groq: async (k) => (await fetch("https://api.groq.com/openai/v1/models", { headers: { Authorization: `Bearer ${k}` }, signal: AbortSignal.timeout(10000) })).ok,
@@ -39,6 +39,20 @@ serve(async (req) => {
     return json(req, { configured: out, pollinations: "anônimo (sem chave)" });
   }
 
+  if (action === "pause" || action === "clear-cooldown") {
+    if (!(PROVIDER_IDS as readonly string[]).includes(provider)) throw new HttpError(400, "bad_request", "Provedor inválido.");
+    if (action === "clear-cooldown") {
+      await db().from("provider_state").delete().eq("provider", provider);
+      return json(req, { ok: true });
+    }
+    const secs = Math.min(Math.max(Number(body.seconds) || 60, 1), 86400);
+    await db().from("provider_state").upsert({
+      provider, model: "*", cooldown_until: new Date(Date.now() + secs * 1000).toISOString(), last_error: "pausado manualmente (admin)",
+      consecutive_failures: 0, updated_at: new Date().toISOString(),
+    });
+    return json(req, { ok: true, paused_seconds: secs });
+  }
+
   if (!KEY_SECRET[provider]) throw new HttpError(400, "bad_request", "Provedor inválido. Use groq, gemini ou openrouter.");
   const secret = KEY_SECRET[provider];
 
@@ -61,10 +75,6 @@ serve(async (req) => {
     await db().from("server_secrets").delete().eq("name", secret);
     invalidateSecret(secret);
     return json(req, { ok: true, provider, removed: true });
-  }
-  if (action === "clear-cooldown") {
-    await db().from("provider_state").delete().eq("provider", provider);
-    return json(req, { ok: true });
   }
   throw new HttpError(400, "bad_request", "Ação inválida.");
 });
