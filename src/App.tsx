@@ -9,8 +9,12 @@ import { Sidebar } from './components/Sidebar'
 import { ChatView, type ChatError, type StreamState } from './components/ChatView'
 import { SettingsModal } from './components/SettingsModal'
 import { speak } from './lib/speech'
+import { takeLinkFromLocation } from './lib/qr'
 
-const DEFAULT_PREFS: Preferences = { theme: 'system', font_size: 'md', language: 'pt-BR', memory_enabled: true, default_model: 'auto', auto_speak: false }
+// Antes de qualquer render: se a URL traz #/login?c=…, guarda o código e limpa o fragmento da barra de endereço.
+takeLinkFromLocation()
+
+const DEFAULT_PREFS: Preferences = { theme: 'system', font_size: 'md', language: 'pt-BR', memory_enabled: true, default_model: 'auto', auto_speak: false, allow_paid_auto: false }
 const FONT_PX = { sm: '14px', md: '16px', lg: '18px' }
 
 function applyPrefs(p: Preferences) {

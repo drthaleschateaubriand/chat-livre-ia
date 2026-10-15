@@ -161,6 +161,32 @@ serve(async (req, action) => {
       return json(req, { ...session });
     }
 
+    // Confirma que o código digitado pertence a ESTA sessão (usado em Ajustes antes de gerar o QR de acesso).
+    // Mesmos limites e contadores de falha do login normal; não cria sessão nova; o código nunca é guardado.
+    case "verify-code": {
+      const a = await requireSession(req);
+      const ra = await rateHit("login_ip", ip, 30, 600, 60);
+      if (!ra.allowed) throw tooMany(ra.retryAfter);
+      const blocked = await ratePeek("login_fail_ip", ip);
+      if (blocked > 0) throw tooMany(blocked);
+      const chk = validateCode(typeof body.code === "string" ? body.code : "");
+      const fail = async (reason: string) => {
+        await logAttempt("verify", false, ip, reason);
+        const f = await rateHit("login_fail_ip", ip, 5, 900, 300);
+        if (!f.allowed) throw tooMany(f.retryAfter);
+        throw new HttpError(401, "invalid_credentials", GENERIC_LOGIN_ERROR);
+      };
+      if (!chk.ok) return await fail("format_" + chk.reason);
+      const pepper = await requireSecret("PEPPER");
+      const lookup = await hmacHex(pepper, "lookup:" + chk.code);
+      const verify = await hmacHex(pepper, "verify:" + chk.code);
+      const { data: user } = await db().from("users").select("id,code_verify").eq("id", a.userId).eq("code_lookup", lookup).maybeSingle();
+      const okCmp = timingSafeEqual(user?.code_verify ?? "0".repeat(64), verify);
+      if (!user || !okCmp) return await fail("not_found");
+      await logAttempt("verify", true, ip);
+      return json(req, { ok: true });
+    }
+
     case "refresh": {
       const r = await rateHit("refresh_ip", ip, 120, 600, 60);
       if (!r.allowed) throw tooMany(r.retryAfter);

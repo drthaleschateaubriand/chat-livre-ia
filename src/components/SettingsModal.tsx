@@ -3,9 +3,11 @@ import type { CatalogProvider, DeviceSession, Memory, Preferences, UsageRow } fr
 import { data } from '../services/api'
 import * as auth from '../services/auth'
 import { download } from '../lib/exporters'
+import { formatCode, normalizeCode } from '../lib/code'
+import { QrCard } from './QrCard'
 
-type Tab = 'appearance' | 'models' | 'memory' | 'devices' | 'data'
-const TABS: [Tab, string][] = [['appearance', 'Aparência'], ['models', 'Modelos'], ['memory', 'Memória'], ['devices', 'Dispositivos'], ['data', 'Dados']]
+type Tab = 'appearance' | 'models' | 'memory' | 'devices' | 'qr' | 'data'
+const TABS: [Tab, string][] = [['appearance', 'Aparência'], ['models', 'Modelos'], ['memory', 'Memória'], ['devices', 'Dispositivos'], ['qr', 'QR de acesso'], ['data', 'Dados']]
 
 export function SettingsModal({ prefs, onPrefs, onClose, onLoggedOut }: {
   prefs: Preferences
@@ -32,6 +34,7 @@ export function SettingsModal({ prefs, onPrefs, onClose, onLoggedOut }: {
           {tab === 'models' && <Models prefs={prefs} onPrefs={onPrefs} />}
           {tab === 'memory' && <Memories prefs={prefs} onPrefs={onPrefs} />}
           {tab === 'devices' && <Devices onLoggedOut={onLoggedOut} />}
+          {tab === 'qr' && <QrTab />}
           {tab === 'data' && <DataTab onLoggedOut={onLoggedOut} />}
         </div>
       </div>
@@ -70,7 +73,13 @@ function Models({ prefs, onPrefs }: { prefs: Preferences; onPrefs: (p: Partial<P
   const fmt = (t: number) => new Date(t).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
   return (
     <div className="space-y-4">
-      <p className="text-zinc-600 dark:text-zinc-400">Todos os modelos usados são <b>gratuitos</b>, mas com <b>limites</b> (por minuto/dia) definidos por cada provedor — nada aqui é ilimitado. Quando um modelo falha ou atinge o limite, o app troca sozinho para o próximo.</p>
+      <p className="text-zinc-600 dark:text-zinc-400">Os provedores do modo Automático são <b>gratuitos</b>, mas com <b>limites</b> (por minuto/dia) definidos por cada provedor — nada aqui é ilimitado. Quando um modelo falha ou atinge o limite, o app troca sozinho para o próximo. O provedor <b>xAI Grok</b> é <b>opcional e pago</b> (só existe se o dono do app gravar uma chave com créditos).</p>
+      {cat?.some((p) => p.paid && p.configured) && (
+        <label className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
+          <input data-testid="allow-paid-auto" type="checkbox" className="mt-0.5 h-5 w-5 shrink-0" checked={prefs.allow_paid_auto} onChange={(e) => onPrefs({ allow_paid_auto: e.target.checked })} />
+          <span><b>Permitir provedores com possível custo no Automático</b> (padrão: desligado). Se ligado, o Grok (xAI) é usado só <i>depois</i> que todos os gratuitos falharem e <b>pode gerar cobrança</b> na conta xAI do dono da chave. Há um teto diário de segurança. Escolher um modelo Grok manualmente também usa o provedor pago.</span>
+        </label>
+      )}
       <div>
         <div className="mb-1 font-medium">Modelo padrão</div>
         <select data-testid="default-model" value={prefs.default_model} onChange={(e) => onPrefs({ default_model: e.target.value })} className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 dark:border-zinc-700 dark:bg-zinc-950">
@@ -91,10 +100,11 @@ function Models({ prefs, onPrefs }: { prefs: Preferences; onPrefs: (p: Partial<P
               <span className={`rounded px-2 py-0.5 text-xs ${p.configured ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200' : 'bg-zinc-200 dark:bg-zinc-700'}`}>{p.configured ? (p.anonymous ? 'ativo (anônimo)' : 'ativo') : 'não configurado'}</span>
             </div>
             <p className="mt-1 text-xs text-zinc-500">{p.note}</p>
-            {!p.configured && p.keyUrl && <p className="mt-1 text-xs">O dono do app precisa cadastrar uma chave grátis em <a className="text-indigo-600 underline" href={p.keyUrl} target="_blank" rel="noopener noreferrer">{p.keyUrl}</a>.</p>}
+            {p.paid && <p className="mt-1 text-xs font-medium text-amber-700 dark:text-amber-300">Opcional, requer chave com créditos; pode gerar cobrança na conta xAI do dono da chave.</p>}
+            {!p.configured && p.keyUrl && <p className="mt-1 text-xs">O dono do app precisa cadastrar uma chave {p.paid ? '(com créditos)' : 'grátis'} em <a className="text-indigo-600 underline" href={p.keyUrl} target="_blank" rel="noopener noreferrer">{p.keyUrl}</a>.</p>}
             {p.configured && (
               <ul className="mt-2 space-y-0.5 text-xs">
-                {p.models.map((m) => <li key={m.id}>• {m.label}{m.cooldownUntil ? <span className="text-amber-600"> — em pausa até {fmt(m.cooldownUntil)}</span> : null}</li>)}
+                {p.models.map((m) => <li key={m.id}>• {m.label}{m.unverified ? <span className="text-zinc-400"> (catálogo estático)</span> : null}{m.cooldownUntil ? <span className="text-amber-600"> — em pausa até {fmt(m.cooldownUntil)}</span> : null}</li>)}
               </ul>
             )}
             <p className="mt-2 text-xs text-zinc-500">Hoje (UTC, todos os usuários): {req} requisição(ões), ~{tok} tokens{rows.some((r) => r.rate_limited) ? `, ${rows.reduce((a, r) => a + r.rate_limited, 0)} limite(s) atingido(s)` : ''}.
@@ -190,6 +200,41 @@ function DataTab({ onLoggedOut }: { onLoggedOut: () => void }) {
           </div>
         )}
       </section>
+    </div>
+  )
+}
+
+function QrTab() {
+  const [code, setCode] = useState('')
+  const [ack, setAck] = useState(false)
+  const [shown, setShown] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  async function go() {
+    setErr(''); setBusy(true)
+    try {
+      const c = normalizeCode(code)
+      await auth.verifyCode(c) // o servidor confirma que é o código desta conta
+      setShown(c); setCode('')
+    } catch (e) { setErr((e as Error).message || 'Não foi possível confirmar o código.') } finally { setBusy(false) }
+  }
+  return (
+    <div className="space-y-3">
+      <p className="rounded-md bg-amber-50 p-3 text-amber-900 dark:bg-amber-950 dark:text-amber-200">⚠️ O QR code <b>equivale ao seu código de acesso</b>: quem o tiver entra na sua conta. Por segurança o app não guarda o seu código, então digite-o para gerar o QR.</p>
+      {shown ? (
+        <>
+          <QrCard code={shown} />
+          <button data-testid="qr-hide" onClick={() => { setShown(null); setAck(false) }} className="w-full rounded-lg border border-zinc-300 py-2.5 font-medium dark:border-zinc-700">Ocultar QR</button>
+        </>
+      ) : (
+        <>
+          <input data-testid="qr-code-input" inputMode="numeric" autoComplete="off" value={code} onChange={(e) => setCode(formatCode(e.target.value.replace(/[^\d\s-]/g, '')))} maxLength={30} placeholder="Seu código de 19 dígitos"
+            className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-3 text-center font-mono text-lg tracking-wider dark:border-zinc-700 dark:bg-zinc-950" />
+          <label className="flex items-start gap-2"><input data-testid="qr-ack" type="checkbox" className="mt-0.5 h-5 w-5" checked={ack} onChange={(e) => setAck(e.target.checked)} /> Entendo que o QR code dá acesso total à minha conta a quem o tiver.</label>
+          {err && <p role="alert" className="rounded-md bg-red-50 p-2 text-red-700 dark:bg-red-950 dark:text-red-300">{err}</p>}
+          <button data-testid="qr-generate" disabled={busy || !ack || normalizeCode(code).length < 18} onClick={go} className="w-full rounded-lg bg-indigo-600 py-3 font-semibold text-white disabled:opacity-50">{busy ? 'Confirmando…' : 'Mostrar meu QR code'}</button>
+        </>
+      )}
     </div>
   )
 }

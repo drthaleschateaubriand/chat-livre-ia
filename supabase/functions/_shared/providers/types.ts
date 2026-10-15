@@ -11,6 +11,8 @@ export interface ModelInfo {
   label: string;
   /** menor = preferido no modo Automático */
   rank: number;
+  /** true = veio de catálogo estático (não conferido na listagem oficial da API com chave) */
+  unverified?: boolean;
 }
 
 export type StreamPart =
@@ -49,6 +51,8 @@ export interface Provider {
   keyUrl: string | null;
   anonymous: boolean;
   note: string;
+  /** true = pode gerar cobrança na conta do dono da chave (não entra no Automático sem permissão explícita) */
+  paid?: boolean;
   /** configurado = pode ser chamado agora (anônimo: sempre; com chave: se houver chave) */
   configured(key: string | null): boolean;
   /** lista modelos elegíveis (usa API oficial quando possível; cai para catálogo estático) */

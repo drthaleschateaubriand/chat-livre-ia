@@ -29,6 +29,14 @@ export interface ManagerDeps {
   maxAttempts?: number;
 }
 
+/** Opções por requisição para provedores que podem gerar cobrança (paid). */
+export interface RunOptions {
+  /** permite provedores pagos no Automático (preferência do usuário; padrão: false) */
+  allowPaid?: boolean;
+  /** limite de segurança chamado antes de cada tentativa paga; false = pular */
+  paidGate?: (providerId: string) => Promise<boolean>;
+}
+
 export type ManagerEvent =
   | { type: "attempt"; provider: string; model: string }
   | { type: "reset" } // descartar texto parcial exibido (troca de provedor no meio da resposta)
@@ -47,8 +55,8 @@ export function cooldownFor(e: ProviderError): { ms: number; explicit: boolean; 
       return ra ? { ms: Math.min(Math.max(ra, 15_000), 24 * HOUR), explicit: true, scope: "model" } : { ms: 60_000, explicit: false, scope: "model" };
     case "auth":
       return { ms: HOUR, explicit: true, scope: "provider" };
-    case "quota":
-      return { ms: HOUR, explicit: true, scope: "provider" };
+    case "quota": // créditos/cota esgotados (ex.: 402/403 da xAI): cooldown longo; o dono precisa recarregar (ou limpar com admin clear-cooldown)
+      return { ms: 6 * HOUR, explicit: true, scope: "provider" };
     case "bad_model":
       return { ms: 6 * HOUR, explicit: true, scope: "model" };
     case "too_large":
@@ -71,6 +79,8 @@ export interface CatalogEntry {
   keyUrl: string | null;
   anonymous: boolean;
   note: string;
+  /** pode gerar cobrança na conta do dono da chave */
+  paid: boolean;
   configured: boolean;
   models: (ModelInfo & { cooldownUntil: number | null; available: boolean })[];
 }
@@ -94,7 +104,7 @@ export class ProviderManager {
       const configured = p.configured(key);
       const models = await p.listModels(key);
       out.push({
-        provider: p.id, name: p.name, keyUrl: p.keyUrl, anonymous: p.anonymous, note: p.note, configured,
+        provider: p.id, name: p.name, keyUrl: p.keyUrl, anonymous: p.anonymous, note: p.note, paid: !!p.paid, configured,
         models: models.map((x) => {
           const c = this.coolUntil(cd, p.id, x.id);
           return { ...x, cooldownUntil: c, available: configured && !c };
@@ -105,14 +115,17 @@ export class ProviderManager {
   }
 
   /** Ordem de tentativa: preferência manual primeiro (se elegível), depois por rank. Pula não configurados e em cooldown. */
-  async plan(pref: string | null | undefined): Promise<{ candidates: { p: Provider; m: ModelInfo; key: string | null }[]; unconfigured: string[]; minCooldownS: number }> {
+  async plan(pref: string | null | undefined, opts: RunOptions = {}): Promise<{ candidates: { p: Provider; m: ModelInfo; key: string | null }[]; unconfigured: string[]; minCooldownS: number }> {
     const cd = await this.d.store.cooldowns();
     const all: { p: Provider; m: ModelInfo; key: string | null }[] = [];
     const unconfigured: string[] = [];
     let minCool = Infinity;
+    const want0 = parseModelPref(pref);
     for (const p of this.d.providers) {
       const key = await this.d.getKey(p.id);
       if (!p.configured(key)) { unconfigured.push(p.id); continue; }
+      // provedor pago: só se o usuário escolheu um modelo dele manualmente OU permitiu pagos no Automático
+      if (p.paid && !opts.allowPaid && want0?.provider !== p.id) continue;
       for (const m of await p.listModels(key)) {
         const c = this.coolUntil(cd, p.id, m.id);
         if (c) { minCool = Math.min(minCool, c); continue; }
@@ -128,8 +141,8 @@ export class ProviderManager {
     return { candidates: all, unconfigured, minCooldownS: Number.isFinite(minCool) ? Math.max(1, Math.ceil((minCool - this.now()) / 1000)) : 0 };
   }
 
-  async *run(messages: ChatMessage[], pref: string | null | undefined, signal?: AbortSignal, maxTokens?: number): AsyncGenerator<ManagerEvent> {
-    const { candidates, unconfigured, minCooldownS } = await this.plan(pref);
+  async *run(messages: ChatMessage[], pref: string | null | undefined, signal?: AbortSignal, maxTokens?: number, opts: RunOptions = {}): AsyncGenerator<ManagerEvent> {
+    const { candidates, unconfigured, minCooldownS } = await this.plan(pref, opts);
     const want = parseModelPref(pref);
     const max = this.d.maxAttempts ?? 6;
     const tried: { provider: string; model: string; kind: ErrorKind; status: number | null }[] = [];
@@ -143,6 +156,13 @@ export class ProviderManager {
       if (n >= max) break;
       // sem martelar um provedor que acabou de falhar (limite/5xx/timeout): pula seus outros modelos nesta requisição
       if (failedProviders.has(c.p.id)) continue;
+      if (c.p.paid && opts.paidGate && !(await opts.paidGate(c.p.id))) {
+        // teto de segurança de consumo pago atingido: não chama o provedor, segue para o próximo
+        failedProviders.add(c.p.id);
+        tried.push({ provider: c.p.id, model: c.m.id, kind: "quota", status: null });
+        yield { type: "fallback", provider: c.p.id, model: c.m.id, kind: "quota", status: null };
+        continue;
+      }
       n++;
       yield { type: "attempt", provider: c.p.id, model: c.m.id };
       let text = 0;
@@ -196,9 +216,9 @@ export class ProviderManager {
   }
 
   /** Resposta completa (não-stream) com o mesmo fallback — usada para resumos. */
-  async complete(messages: ChatMessage[], pref?: string, maxTokens?: number): Promise<{ text: string; provider: string; model: string } | null> {
+  async complete(messages: ChatMessage[], pref?: string, maxTokens?: number, opts: RunOptions = {}): Promise<{ text: string; provider: string; model: string } | null> {
     let text = "";
-    for await (const ev of this.run(messages, pref, undefined, maxTokens)) {
+    for await (const ev of this.run(messages, pref, undefined, maxTokens, opts)) {
       if (ev.type === "delta") text += ev.text;
       else if (ev.type === "reset") text = "";
       else if (ev.type === "done") return { text, provider: ev.provider, model: ev.model };

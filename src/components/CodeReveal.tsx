@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { formatCode } from '../lib/code'
 import { copyText } from '../lib/clipboard'
 import { download } from '../lib/exporters'
+import { QrCard } from './QrCard'
 
 export function CodeReveal({ code, onConfirm }: { code: string; onConfirm: () => void }) {
   const [ack, setAck] = useState(false)
@@ -29,6 +30,7 @@ export function CodeReveal({ code, onConfirm }: { code: string; onConfirm: () =>
             ⬇️ Baixar .txt
           </button>
         </div>
+        <div className="mt-4"><QrCard code={code} /></div>
         <p className="mt-4 rounded-md bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">
           ⚠️ <b>Não há recuperação.</b> Quem tiver este código acessa sua conta; se você perdê-lo, perde o acesso às conversas. Não existe e-mail ou telefone para redefinir.
         </p>

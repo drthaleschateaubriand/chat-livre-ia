@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { formatCode, normalizeCode, validateCode } from '../lib/code'
 import * as auth from '../services/auth'
 import { ApiError } from '../services/api'
 import type { SessionTokens } from '../types'
+import { consumeLink } from '../lib/qr'
+import { QrScanner } from './QrScanner'
 
 export interface Reveal { code: string; tokens: SessionTokens }
 
@@ -14,19 +16,35 @@ export function AuthScreen({ onReveal }: { onReveal: (r: Reveal) => void }) {
   const [err, setErr] = useState('')
   const [progress, setProgress] = useState(0)
 
+  const [scanning, setScanning] = useState(false)
+  const [linking, setLinking] = useState(false)
+
+  async function loginWith(c: string) {
+    setErr('')
+    setBusy(true)
+    try {
+      await auth.login(c, keep)
+    } catch (ex) {
+      if (ex instanceof ApiError && ex.status === 429) setErr(`Muitas tentativas. Aguarde ${Math.ceil((ex.retryAfter ?? 60) / 60)} min e tente de novo.`)
+      else setErr(ex instanceof Error ? ex.message : 'Falha ao entrar.')
+    } finally { setBusy(false); setLinking(false) }
+  }
+
   async function doLogin(e: React.FormEvent) {
     e.preventDefault()
     setErr('')
     const v = validateCode(code)
     if (!v.ok) { setErr(v.message); return }
-    setBusy(true)
-    try {
-      await auth.login(v.code, keep)
-    } catch (ex) {
-      if (ex instanceof ApiError && ex.status === 429) setErr(`Muitas tentativas. Aguarde ${Math.ceil((ex.retryAfter ?? 60) / 60)} min e tente de novo.`)
-      else setErr(ex instanceof Error ? ex.message : 'Falha ao entrar.')
-    } finally { setBusy(false) }
+    await loginWith(v.code)
   }
+
+  // Link de QR aberto diretamente (câmera nativa do celular): #/login?c=… já foi limpo da URL em takeLinkFromLocation()
+  useEffect(() => {
+    const l = consumeLink()
+    if (!l) return
+    if (l.ok) { setLinking(true); void loginWith(l.code) } else setErr(l.message + ' Digite o código manualmente.')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function doCreate() {
     setErr('')
@@ -65,9 +83,13 @@ export function AuthScreen({ onReveal }: { onReveal: (r: Reveal) => void }) {
               value={code} onChange={(e) => setCode(formatCode(e.target.value.replace(/[^\d\s-]/g, '')))} placeholder="0000 0000 0000 0000 000" maxLength={30}
               className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-3 text-center font-mono text-lg tracking-wider outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 dark:border-zinc-700 dark:bg-zinc-950" />
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={keep} onChange={(e) => setKeep(e.target.checked)} className="h-4 w-4" /> Manter conectado neste dispositivo (30 dias)</label>
+            {linking && <p role="status" data-testid="qr-linking" className="rounded-md bg-indigo-50 p-2 text-sm text-indigo-800 dark:bg-indigo-950 dark:text-indigo-200">Entrando com o link do QR code…</p>}
             {err && <p role="alert" className="rounded-md bg-red-50 p-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">{err}</p>}
             <button disabled={busy || normalizeCode(code).length < 18} data-testid="login-btn" className="w-full rounded-lg bg-indigo-600 py-3 font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50">
               {busy ? 'Entrando…' : 'Entrar'}
+            </button>
+            <button type="button" disabled={busy} onClick={() => { setErr(''); setScanning(true) }} data-testid="qr-login-btn" className="w-full rounded-lg border border-zinc-300 py-3 font-medium transition hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
+              📷 Entrar com QR code
             </button>
           </form>
         ) : (
@@ -84,6 +106,7 @@ export function AuthScreen({ onReveal }: { onReveal: (r: Reveal) => void }) {
           </div>
         )}
       </div>
+      {scanning && <QrScanner onClose={() => setScanning(false)} onCode={(c) => { setScanning(false); void loginWith(c) }} />}
     </div>
   )
 }

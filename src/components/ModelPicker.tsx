@@ -40,7 +40,9 @@ export function ModelPicker({ value, catalog, onChange, onOpen }: { value: strin
               <div className="flex items-center justify-between px-3 py-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
                 <span>{p.name}</span>
                 {!p.configured && <span className="rounded bg-zinc-200 px-1.5 py-0.5 text-[10px] normal-case dark:bg-zinc-700">não configurado</span>}
+                {p.configured && p.paid && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] normal-case text-amber-800 dark:bg-amber-950 dark:text-amber-200">pago</span>}
               </div>
+              {p.paid && <div className="px-3 pb-1 text-[11px] text-amber-700 dark:text-amber-300">Opcional, requer chave com créditos; pode gerar cobrança na conta xAI do dono da chave.</div>}
               {p.models.map((m) => {
                 const v = `${m.provider}|${m.id}`
                 const disabled = !p.configured

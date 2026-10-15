@@ -6,6 +6,12 @@ export interface CompatConfig {
   keyUrl: string | null;
   anonymous: boolean;
   note: string;
+  /** provedor que pode gerar cobrança (créditos) */
+  paid?: boolean;
+  /** classifica um erro HTTP específico do provedor (devolve null para usar a regra padrão) */
+  classify?: (status: number, body: string) => ErrorKind | null;
+  /** nome do campo de limite de tokens (padrão: max_tokens) */
+  maxTokensField?: string;
   /** URL completa do endpoint de chat completions */
   chatUrl: string;
   /** URL de listagem de modelos (opcional) */
@@ -81,6 +87,7 @@ export class OpenAICompatProvider implements Provider {
   keyUrl: string | null;
   anonymous: boolean;
   note: string;
+  paid: boolean;
   private live: { at: number; models: ModelInfo[] } | null = null;
   constructor(private cfg: CompatConfig) {
     this.id = cfg.id;
@@ -88,6 +95,7 @@ export class OpenAICompatProvider implements Provider {
     this.keyUrl = cfg.keyUrl;
     this.anonymous = cfg.anonymous;
     this.note = cfg.note;
+    this.paid = !!cfg.paid;
   }
 
   configured(key: string | null): boolean {
@@ -133,7 +141,7 @@ export class OpenAICompatProvider implements Provider {
       const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "text/event-stream", ...(c.extraHeaders ?? {}) };
       if (key) headers["Authorization"] = `Bearer ${key}`;
       const body: Record<string, unknown> = { model, messages, stream: true, stream_options: { include_usage: true } };
-      if (opts.maxTokens) body.max_tokens = opts.maxTokens;
+      if (opts.maxTokens) body[c.maxTokensField ?? "max_tokens"] = opts.maxTokens;
       let res: Response;
       try {
         res = await this.f()(c.chatUrl, { method: "POST", headers, body: JSON.stringify(body), signal: ctrl.signal });
@@ -147,7 +155,7 @@ export class OpenAICompatProvider implements Provider {
       if (!res.ok) {
         let detail = "";
         try { detail = (await res.text()).slice(0, 300); } catch { /* ignora */ }
-        throw new ProviderError(kindForStatus(res.status), `HTTP ${res.status} ${detail}`.trim(), res.status, parseRetryAfter(res.headers), hdrs);
+        throw new ProviderError(c.classify?.(res.status, detail) ?? kindForStatus(res.status), `HTTP ${res.status} ${detail}`.trim(), res.status, parseRetryAfter(res.headers), hdrs);
       }
       if (!res.body) throw new ProviderError("server", "resposta sem corpo", res.status);
       yield { type: "activity" };

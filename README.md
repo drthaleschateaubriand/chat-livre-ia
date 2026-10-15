@@ -20,6 +20,13 @@ Chat estilo ChatGPT com **IAs gratuitas**, **login somente numérico** (código 
 5. **Sessões:** token de acesso opaco de 32 bytes (15 min) + refresh opaco com **rotação** (30 dias em "manter conectado", 12 h em sessão curta), guardados como SHA-256. Reuso de refresh antigo (fora da janela de corrida de 20 s) revoga a sessão. Há logout, "sair de todos os dispositivos" e revogação por dispositivo. O mesmo código funciona em vários dispositivos.
 6. **Isolamento:** todas as tabelas têm RLS ligado, **nenhuma policy** e `REVOKE` para `anon/authenticated`. Só as Edge Functions (service role) leem/escrevem, e o `user_id` vem **sempre da sessão**, nunca do corpo. CORS restrito a `https://drthaleschateaubriand.github.io` e `http://localhost:5173/4173` (nunca `*`).
 
+#### Entrar com QR code
+O mesmo código também pode ser usado como **QR code** (mesmas regras de rate limit/segurança do login normal):
+- **Onde aparece:** na tela de revelação do código (criação de conta) e em *Ajustes → QR de acesso* (exige **digitar o código**, que o servidor confirma com `auth/verify-code`, mais uma caixa de confirmação; o app não guarda o código). Há botão **Baixar imagem do QR** (PNG).
+- **Conteúdo do QR:** o link `https://drthaleschateaubriand.github.io/chat-livre-ia/#/login?c=<código>`. O código vai no **fragmento (`#`)**, que o navegador nunca envia ao servidor, a logs ou ao `Referer`; nada de query string.
+- ⚠️ **O QR equivale ao código:** quem tiver a imagem/foto/print acessa a conta. Guarde-o como o código e não o compartilhe.
+- **Entrar:** tela de login → **“Entrar com QR code”** (câmera via `BarcodeDetector` quando existir, senão `jsQR`), ou **escolher uma imagem do QR** salva na galeria, ou simplesmente **abrir o link/QR com a câmera nativa do celular**: o app lê o fragmento, faz o login e **limpa o fragmento da URL** (`history.replaceState`) imediatamente. Se a permissão da câmera for negada, aparece uma mensagem com as alternativas (imagem ou digitar o código). Com uma sessão já ativa, abrir um link de QR apenas limpa o fragmento.
+
 ### IA e provedores (fallback automático)
 Módulo `supabase/functions/_shared/providers/`:
 
@@ -29,6 +36,15 @@ Módulo `supabase/functions/_shared/providers/`:
 | **Groq** | grátis | `llama-3.3-70b-versatile`, `llama-3.1-8b-instant`, `openai/gpt-oss-*` (lista real consultada pela API quando há chave) |
 | **Google Gemini** | grátis | `gemini-2.5-flash`, `gemini-2.0-flash`… (lista real pela API oficial quando há chave) |
 | **OpenRouter** | grátis | somente modelos com sufixo `:free` (lista pública consultada ao vivo) |
+| **xAI Grok** | ⚠️ **paga, opcional** | API oficial OpenAI-compatível (`https://api.x.ai/v1/chat/completions`). **Opcional, requer chave com créditos; pode gerar cobrança na conta xAI do dono da chave.** Sem plano gratuito garantido (só créditos promocionais eventuais) |
+
+#### xAI Grok (opcional, pago)
+- **Desligado por padrão:** sem chave gravada aparece como "não configurado" e é pulado. Com chave, **continua fora do Automático**: só é usado (a) quando o usuário **escolhe manualmente um modelo Grok**, ou (b) quando liga *Ajustes → Modelos → "Permitir provedores com possível custo no Automático"* (padrão: **desligado**, por usuário). Mesmo ligado, o Grok entra **depois** de Groq, Gemini, OpenRouter `:free` e Pollinations, só quando todos falham.
+- **Teto de segurança:** no máximo 30 chamadas pagas/usuário/dia e 300 no total/dia (constantes em `chat/index.ts`), para proteger os créditos do dono; acima disso o Grok é pulado e o app segue para o próximo provedor.
+- **Erros:** 429 → circuit breaker (`Retry-After`); 402, ou 403 de créditos/limite de gasto esgotado → *cota esgotada* com cooldown de 6 h no provedor inteiro (após recarregar, `set-provider-key.sh xai clear-cooldown`); 401/403 de chave ou 400 "Incorrect API key" → `auth`, cooldown de 1 h.
+- **Modelos:** nomes conforme https://docs.x.ai/docs/models (conferidos em 15/10/2026: `grok-4.3`, `grok-4.7`, `grok-4.20-0309-non-reasoning`). Com chave, a lista vem de `GET https://api.x.ai/v1/models`; sem chave, vale um catálogo estático **marcado como não verificado**. O stream usa `max_completion_tokens` (o `max_tokens` está obsoleto na xAI).
+- **Obter a chave:** https://console.x.ai (cadastre créditos/limite de gasto lá; a cobrança é na conta de quem criou a chave). Limites por tier (RPS/TPM): https://docs.x.ai/docs/key-information/consumption-and-rate-limits · preços: https://docs.x.ai/docs/models
+- **Não testado com chave real** (este projeto não tem chave xAI). Testado: classificação de erros e fallback com servidor HTTP local, e a chamada **real** à API da xAI com chave inválida (retorna 400 → `auth` → fallback).
 
 - Provedores **sem chave aparecem como "não configurado"** na interface e são pulados.
 - Modo **Automático** escolhe o melhor elegível (por *rank*) e, em erro/timeout/429/5xx/401, **troca sozinho** para o próximo mantendo o contexto. Falha no meio da resposta descarta o parcial e recomeça no próximo.
@@ -48,11 +64,11 @@ Conversas, mensagens, preferências e **memórias explícitas** (editáveis/excl
 ```
 src/                 components/ services/ lib/ types/   (frontend)
 supabase/
-  migrations/        esquema, funções (rate limit/uso), pepper, rotated_at
+  migrations/        esquema, funções (rate limit/uso), pepper, rotated_at, allow_paid_auto
   functions/
     _shared/         code.ts, crypto.ts, db.ts, http.ts, cors.ts, session.ts, providers/
     auth/ chat/ data/ admin-set-key/
-tests/               *.test.ts (vitest), integration.mjs, ratelimit.mjs, e2e.mjs (Playwright)
+tests/               *.test.ts (vitest), integration.mjs, xai-qr.mjs, ratelimit.mjs, e2e.mjs, e2e-qr.mjs (Playwright)
 scripts/             deploy-gh-pages.sh, bundle-functions.sh, set-provider-key.sh/.sql, make-icons.py
 docs/                deploy-workflow.yml, SEGURANCA.md
 public/              manifest, sw.js, icons/
@@ -68,10 +84,12 @@ npm run build
 ```
 
 ## Testes
-- `npm test` — unitários (31): normalização/validação do código, geração sem viés, seleção/fallback/cooldown com mocks **e** com servidor HTTP local simulando 429/503/timeout/SSE.
+- `npm test` — unitários (vitest): normalização/validação do código, geração sem viés, seleção/fallback/cooldown com mocks **e** com servidor HTTP local simulando 429/503/timeout/SSE; **xAI** (402/403/429, ordem no Automático, escolha manual, "não configurado", teto pago); **QR** (parse do link/dígitos, fragmento limpo, QR gerado e decodificado com jsQR).
 - `npm run test:integration` — integração contra as Edge Functions reais (conta, login, sessões, isolamento A×B, acesso direto às tabelas com a chave anon, CORS, IA real, histórico, 2º dispositivo, memórias, fallback real, cotas esgotadas, resumo, exclusão). Antes: `delete from public.rate_limits;`.
+- `npm run test:xai-qr` — integração real: xAI desligado/pago por padrão, preferência `allow_paid_auto`, `admin-set-key xai` (validação real), chamada real com chave inválida + fallback, `auth/verify-code`. Antes: `delete from public.rate_limits;`.
 - `npm run test:ratelimit` — bloqueio progressivo de login e limite de criação de contas (bloqueia seu IP por alguns minutos; limpe `rate_limits` depois).
 - `node tests/e2e.mjs` — Playwright/Chromium contra o GitHub Pages (viewport iPhone 390×844, Android, desktop) com *screenshots*.
+- `npm run test:e2e-qr` — Playwright: gera o QR, baixa o PNG, decodifica, loga pelo link com fragmento (URL limpa), por imagem da galeria e pela **câmera FAKE do Chromium** alimentada com vídeo do QR; erros de QR/permissão negada; confere que o código nunca vai em URL/query. **Câmera física de celular não foi testada.**
 
 ## Deploy
 ### Frontend (GitHub Pages)
@@ -90,6 +108,7 @@ Migrações em `supabase/migrations/` (aplique em ordem). Edge Functions: com a 
 | Groq | https://console.groq.com/keys |
 | Google Gemini | https://aistudio.google.com/apikey |
 | OpenRouter | https://openrouter.ai/settings/keys (use só modelos `:free`) |
+| xAI Grok (**opcional, requer chave com créditos; pode gerar cobrança**) | https://console.x.ai |
 
 As chaves **não** vão para o frontend nem para o Git. Ficam na tabela privada `server_secrets` e são gravadas pela Edge Function `admin-set-key`, protegida por um `ADMIN_TOKEN` aleatório (só o hash SHA-256 fica no banco; o token em texto puro fica fora do repositório):
 
@@ -98,10 +117,11 @@ As chaves **não** vão para o frontend nem para o Git. Ficam na tabela privada 
 PROVIDER_KEY='cole-aqui' bash scripts/set-provider-key.sh groq
 PROVIDER_KEY='cole-aqui' bash scripts/set-provider-key.sh gemini
 PROVIDER_KEY='cole-aqui' bash scripts/set-provider-key.sh openrouter
+PROVIDER_KEY='cole-aqui' bash scripts/set-provider-key.sh xai          # OPCIONAL e PAGO: pode gerar cobrança na conta xAI da chave
 bash scripts/set-provider-key.sh status            # quais estão configurados
 bash scripts/set-provider-key.sh groq delete       # remover
 ```
-A função valida a chave na API do provedor antes de gravar (recusa chaves inválidas). Alternativa: `scripts/set-provider-key.sql`. As funções também leem `Deno.env` primeiro (`KEY_GROQ`, `KEY_GEMINI`, `KEY_OPENROUTER`), caso você configure *secrets* nativos pelo painel.
+A função valida a chave na API do provedor antes de gravar (recusa chaves inválidas). Alternativa: `scripts/set-provider-key.sql`. As funções também leem `Deno.env` primeiro (`KEY_GROQ`, `KEY_GEMINI`, `KEY_OPENROUTER`, `KEY_XAI`), caso você configure *secrets* nativos pelo painel.
 
 ## Limitações dos planos gratuitos (confira sempre a fonte oficial)
 - **Nada é ilimitado.** Cada provedor limita requisições/tokens por minuto e/ou dia e pode mudar as regras.
@@ -110,7 +130,8 @@ A função valida a chave na API do provedor antes de gravar (recusa chaves inv�
 - **OpenRouter `:free`:** segundo a documentação, 20 requisições/min e, com menos de 10 créditos comprados, 50 requisições/dia (1000/dia com ≥10 créditos) — https://openrouter.ai/docs/api-reference/limits
 - **Pollinations anônimo:** sujeito a fila e limites por IP; sem garantia de disponibilidade — https://pollinations.ai
 - **Supabase free:** projetos inativos podem ser pausados e há limites de uso/Edge Functions — https://supabase.com/pricing
-- O app **nunca ativa cobrança**; use apenas planos/modelos gratuitos.
+- **xAI Grok:** sem plano gratuito garantido; cobrança por token na conta de quem criou a chave. Tiers, RPS e TPM: https://docs.x.ai/docs/key-information/consumption-and-rate-limits
+- O app **nunca ativa cobrança** por conta própria: o único provedor que pode gerar custo (xAI) só existe com chave que o dono gravar e fica fora do Automático por padrão.
 - Dados de planos gratuitos de alguns provedores podem ser usados para melhorar seus produtos (ex.: Gemini API gratuita): não envie dados sensíveis.
 
 ## Segurança

@@ -1,6 +1,6 @@
 // Edge Function `admin-set-key`: o DONO cadastra/remove chaves de provedores sem expô-las no chat.
 // Autenticação: cabeçalho `x-admin-token` comparado (hash SHA-256, tempo constante) com ADMIN_TOKEN_HASH em server_secrets.
-// Corpo: { action: "set"|"delete"|"status"|"clear-cooldown"|"pause" (+ seconds), provider: "groq"|"gemini"|"openrouter", key?: string, validate?: boolean }
+// Corpo: { action: "set"|"delete"|"status"|"clear-cooldown"|"pause" (+ seconds), provider: "groq"|"gemini"|"openrouter"|"xai", key?: string, validate?: boolean }
 import { db, invalidateSecret, requireSecret } from "../_shared/db.ts";
 import { sha256Hex, timingSafeEqual } from "../_shared/crypto.ts";
 import { HttpError, json, readJson, serve } from "../_shared/http.ts";
@@ -10,6 +10,8 @@ import { KEY_SECRET, PROVIDER_IDS } from "../_shared/providers/registry.ts";
 const CHECKS: Record<string, (key: string) => Promise<boolean>> = {
   groq: async (k) => (await fetch("https://api.groq.com/openai/v1/models", { headers: { Authorization: `Bearer ${k}` }, signal: AbortSignal.timeout(10000) })).ok,
   gemini: async (k) => (await fetch("https://generativelanguage.googleapis.com/v1beta/openai/models", { headers: { Authorization: `Bearer ${k}` }, signal: AbortSignal.timeout(10000) })).ok,
+  // xAI: GET /v1/models com a chave (não consome créditos); 200 = chave válida
+  xai: async (k) => (await fetch("https://api.x.ai/v1/models", { headers: { Authorization: `Bearer ${k}` }, signal: AbortSignal.timeout(10000) })).ok,
   openrouter: async (k) => (await fetch("https://openrouter.ai/api/v1/auth/key", { headers: { Authorization: `Bearer ${k}` }, signal: AbortSignal.timeout(10000) })).ok,
 };
 
@@ -53,7 +55,7 @@ serve(async (req) => {
     return json(req, { ok: true, paused_seconds: secs });
   }
 
-  if (!KEY_SECRET[provider]) throw new HttpError(400, "bad_request", "Provedor inválido. Use groq, gemini ou openrouter.");
+  if (!KEY_SECRET[provider]) throw new HttpError(400, "bad_request", "Provedor inválido. Use groq, gemini, openrouter ou xai.");
   const secret = KEY_SECRET[provider];
 
   if (action === "set") {

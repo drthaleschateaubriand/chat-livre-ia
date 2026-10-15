@@ -256,3 +256,177 @@ describe('resposta vazia', () => {
     expect(ev2[ev2.length - 1].type).toBe('exhausted')
   })
 })
+
+// --- xAI (Grok): provedor opcional/pago. Servidor HTTP local imita 402/403/429/SSE; NENHUMA chamada real à xAI ---
+describe('xAI Grok (opcional, pago) — mock HTTP local', () => {
+  let server: Server
+  let base = ''
+  const hits: Record<string, number> = {}
+  const bodies: Record<string, any> = {}
+  const auth: Record<string, string | undefined> = {}
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      hits[req.url!] = (hits[req.url!] ?? 0) + 1
+      auth[req.url!] = req.headers.authorization
+      let raw = ''
+      req.on('data', (c) => (raw += c))
+      req.on('end', () => {
+        try { bodies[req.url!] = JSON.parse(raw) } catch { /* sem corpo */ }
+        if (req.url === '/x402') { res.writeHead(402); res.end('{"error":"payment required"}'); return }
+        if (req.url === '/x403credits') { res.writeHead(403); res.end('{"error":"Your team has either used all available credits or reached its monthly spending limit."}'); return }
+        if (req.url === '/x403other') { res.writeHead(403); res.end('{"error":"access forbidden"}'); return }
+        if (req.url === '/x429') { res.writeHead(429, { 'retry-after': '30' }); res.end('{"error":"too many requests"}'); return }
+        if (req.url === '/x400key') { res.writeHead(400); res.end('{"error":"Incorrect API key provided"}'); return }
+        if (req.url === '/xok') {
+          res.writeHead(200, { 'content-type': 'text/event-stream' })
+          res.write('data: {"choices":[{"delta":{"reasoning_content":"hmm"}}]}\n\n')
+          res.write('data: {"choices":[{"delta":{"content":"Oi do Grok"}}]}\n\n')
+          res.write('data: {"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3}}\n\n')
+          res.end('data: [DONE]\n\n')
+          return
+        }
+        res.writeHead(404); res.end()
+      })
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  })
+  afterAll(() => { server.closeAllConnections?.(); server.close() })
+
+  const xai = (path: string) => buildProviders(undefined, { xai: base + path }).find((p) => p.id === 'xai')!
+  const free = (rank = 50) => fake('free', rank, () => text('resposta gratuita'))
+  const run = async (p: Provider) => { const o: StreamPart[] = []; for await (const x of p.stream('grok-4.3', msgs, 'K', { firstByteTimeoutMs: 3000, idleTimeoutMs: 3000, maxTokens: 99 })) o.push(x); return o }
+  async function go(m: ProviderManager, pref: string | null, opts?: Parameters<ProviderManager['run']>[4]) {
+    const ev = []
+    for await (const e of m.run(msgs, pref, undefined, undefined, opts)) ev.push(e)
+    return ev
+  }
+
+  it('metadados: pago, chave em console.x.ai, modelos estáticos marcados como não verificados', async () => {
+    const p = buildProviders().find((x) => x.id === 'xai')!
+    expect(p.paid).toBe(true)
+    expect(p.keyUrl).toBe('https://console.x.ai')
+    expect(p.anonymous).toBe(false)
+    expect(p.configured(null)).toBe(false) // DESLIGADO sem chave
+    const ms = await p.listModels(null)
+    expect(ms.length).toBeGreaterThan(0)
+    expect(ms.every((x) => x.unverified && x.rank >= 200)).toBe(true)
+    // gratuitos nunca são pagos
+    expect(buildProviders().filter((x) => x.id !== 'xai').every((x) => !x.paid)).toBe(true)
+  })
+
+  it('stream SSE: Bearer, max_completion_tokens (não max_tokens), ignora reasoning_content, lê usage', async () => {
+    const parts = await run(xai('/xok'))
+    expect(parts.filter((x) => x.type === 'delta').map((x) => (x as { text: string }).text).join('')).toBe('Oi do Grok')
+    expect(parts.find((x) => x.type === 'usage')).toMatchObject({ tin: 7, tout: 3 })
+    expect(auth['/xok']).toBe('Bearer K')
+    expect(bodies['/xok']).toMatchObject({ model: 'grok-4.3', stream: true, max_completion_tokens: 99 })
+    expect(bodies['/xok'].max_tokens).toBeUndefined()
+  })
+
+  it('classifica erros: 402 e 403 de créditos => quota; 403 outro/401/400 chave => auth; 429 => rate_limit', async () => {
+    await expect(run(xai('/x402'))).rejects.toMatchObject({ kind: 'quota', status: 402 })
+    await expect(run(xai('/x403credits'))).rejects.toMatchObject({ kind: 'quota', status: 403 })
+    await expect(run(xai('/x403other'))).rejects.toMatchObject({ kind: 'auth', status: 403 })
+    await expect(run(xai('/x400key'))).rejects.toMatchObject({ kind: 'auth', status: 400 })
+    await expect(run(xai('/x429'))).rejects.toMatchObject({ kind: 'rate_limit', status: 429, retryAfterS: 30 })
+  })
+
+  it('cota esgotada (quota) => cooldown LONGO (6 h) no provedor inteiro', () => {
+    const c = cooldownFor(new ProviderError('quota', '', 402))
+    expect(c.scope).toBe('provider')
+    expect(c.ms).toBeGreaterThanOrEqual(6 * 3_600_000)
+  })
+
+  it('FALLBACK: manual em Grok com 402 => cai para o gratuito, grava cooldown longo e não chama de novo', async () => {
+    const store = new MemStore()
+    const m = new ProviderManager({ providers: [free(), xai('/x402')], getKey: async () => 'K', store })
+    hits['/x402'] = 0
+    const ev = await go(m, 'xai|grok-4.3')
+    expect(ev.find((e) => e.type === 'attempt')).toMatchObject({ provider: 'xai' })
+    expect(ev.find((e) => e.type === 'fallback')).toMatchObject({ provider: 'xai', kind: 'quota', status: 402 })
+    expect(ev.find((e) => e.type === 'done')).toMatchObject({ provider: 'free', fallbackUsed: true })
+    expect(store.cd['xai|*']).toBeGreaterThan(Date.now() + 5 * 3_600_000)
+    await go(m, 'xai|grok-4.3')
+    expect(hits['/x402']).toBe(1) // circuit breaker: nenhuma segunda chamada
+  })
+
+  it('FALLBACK: 429 do Grok => próximo provedor (circuit breaker por Retry-After)', async () => {
+    const store = new MemStore()
+    const m = new ProviderManager({ providers: [free(), xai('/x429')], getKey: async () => 'K', store })
+    hits['/x429'] = 0
+    const ev = await go(m, 'xai|grok-4.3')
+    expect(ev.find((e) => e.type === 'done')).toMatchObject({ provider: 'free', fallbackUsed: true })
+    expect(store.fails[0].f).toMatchObject({ kind: 'rate_limit', explicit: true })
+    expect(hits['/x429']).toBe(1)
+  })
+
+  it('403 de créditos esgotados => quota + fallback', async () => {
+    const store = new MemStore()
+    const m = new ProviderManager({ providers: [free(), xai('/x403credits')], getKey: async () => 'K', store })
+    const ev = await go(m, 'xai|grok-4.3')
+    expect(ev.find((e) => e.type === 'fallback')).toMatchObject({ kind: 'quota', status: 403 })
+    expect(ev.find((e) => e.type === 'done')).toMatchObject({ provider: 'free' })
+  })
+
+  it('AUTOMÁTICO nunca chama o Grok por padrão (mesmo com chave), mas chama DEPOIS dos gratuitos quando permitido', async () => {
+    hits['/xok'] = 0
+    // 1) padrão: gratuito responde, Grok nem é planejado
+    let m = new ProviderManager({ providers: [free(), xai('/xok')], getKey: async () => 'K', store: new MemStore() })
+    const plan0 = await m.plan('auto')
+    expect(plan0.candidates.map((c) => c.p.id)).toEqual(['free'])
+    // 2) todos os gratuitos falhando e sem permissão => esgotado, Grok NÃO é usado
+    const bad = fake('bad', 10, () => new ProviderError('rate_limit', '429', 429, 60))
+    m = new ProviderManager({ providers: [bad, xai('/xok')], getKey: async () => 'K', store: new MemStore() })
+    const ev0 = await go(m, 'auto')
+    expect(ev0[ev0.length - 1].type).toBe('exhausted')
+    expect(hits['/xok']).toBe(0)
+    // 3) permitido: ordem = gratuitos primeiro, Grok por último
+    m = new ProviderManager({ providers: [xai('/xok'), free(60), bad], getKey: async () => 'K', store: new MemStore() })
+    const plan1 = await m.plan('auto', { allowPaid: true })
+    expect(plan1.candidates.map((c) => c.p.id)).toEqual(['bad', 'free', ...plan1.candidates.slice(2).map(() => 'xai')])
+    // 4) permitido + todos os gratuitos falham => Grok responde
+    m = new ProviderManager({ providers: [xai('/xok'), bad], getKey: async () => 'K', store: new MemStore() })
+    const ev1 = await go(m, 'auto', { allowPaid: true })
+    expect(ev1.find((e) => e.type === 'done')).toMatchObject({ provider: 'xai' })
+    expect(hits['/xok']).toBe(1)
+  })
+
+  it('escolha manual de modelo Grok funciona mesmo com "permitir pagos" desligado, e vem antes dos gratuitos', async () => {
+    const m = new ProviderManager({ providers: [free(10), xai('/xok')], getKey: async () => 'K', store: new MemStore() })
+    const plan = await m.plan('xai|grok-4.3')
+    expect(plan.candidates[0].p.id).toBe('xai')
+    expect(plan.candidates[0].m.id).toBe('grok-4.3')
+    const ev = await go(m, 'xai|grok-4.3')
+    expect(ev.find((e) => e.type === 'done')).toMatchObject({ provider: 'xai', model: 'grok-4.3', fallbackUsed: false })
+  })
+
+  it('sem chave: "não configurado" e pulado, mesmo em escolha manual', async () => {
+    const m = new ProviderManager({ providers: [free(), xai('/xok')], getKey: async (id) => (id === 'xai' ? null : 'K'), store: new MemStore() })
+    hits['/xok'] = 0
+    const plan = await m.plan('xai|grok-4.3', { allowPaid: true })
+    expect(plan.unconfigured).toContain('xai')
+    const ev = await go(m, 'xai|grok-4.3', { allowPaid: true })
+    expect(ev.find((e) => e.type === 'done')).toMatchObject({ provider: 'free' })
+    expect(hits['/xok']).toBe(0)
+    const cat = await m.catalog()
+    expect(cat.find((c) => c.provider === 'xai')).toMatchObject({ configured: false, paid: true })
+  })
+
+  it('teto de consumo pago (paidGate=false) pula o Grok sem chamá-lo', async () => {
+    const m = new ProviderManager({ providers: [free(), xai('/xok')], getKey: async () => 'K', store: new MemStore() })
+    hits['/xok'] = 0
+    const ev = await go(m, 'xai|grok-4.3', { paidGate: async () => false })
+    expect(ev.find((e) => e.type === 'fallback')).toMatchObject({ provider: 'xai', kind: 'quota' })
+    expect(ev.find((e) => e.type === 'done')).toMatchObject({ provider: 'free' })
+    expect(hits['/xok']).toBe(0)
+  })
+
+  it('com chave, a lista vem de GET /models (apenas modelos de chat grok-*, sem imagem/vídeo/voz)', async () => {
+    const f = (async () => new Response(JSON.stringify({ data: [{ id: 'grok-4.3' }, { id: 'grok-imagine-image' }, { id: 'grok-4.7' }, { id: 'grok-voice-3.0' }] }), { status: 200 })) as unknown as typeof fetch
+    const p = buildProviders(f).find((x) => x.id === 'xai')!
+    const ms = await p.listModels('K')
+    expect(ms.map((x) => x.id)).toEqual(['grok-4.3', 'grok-4.7'])
+    expect(ms.some((x) => x.unverified)).toBe(false)
+  })
+})

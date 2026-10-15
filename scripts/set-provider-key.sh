@@ -2,6 +2,7 @@
 # Cadastra (ou remove) a chave de um provedor de IA de forma segura, SEM expor a chave no chat/histórico do shell.
 #
 #   PROVIDER_KEY='...sua chave...' bash scripts/set-provider-key.sh groq          # grava (valida na API do provedor)
+#   PROVIDER_KEY='xai-...' bash scripts/set-provider-key.sh xai                    # OPCIONAL/PAGO: pode gerar cobrança na conta xAI do dono da chave
 #   bash scripts/set-provider-key.sh status                                         # mostra quais estão configurados
 #   bash scripts/set-provider-key.sh gemini delete                                  # remove
 #   bash scripts/set-provider-key.sh openrouter clear-cooldown                      # limpa pausa (circuit breaker)
@@ -18,7 +19,7 @@ if [ -z "${ADMIN_TOKEN:-}" ]; then
 fi
 provider="${1:-}"; action="${2:-set}"
 if [ "$provider" = "status" ]; then provider="groq"; action="status"; fi
-case "$provider" in groq|gemini|openrouter|pollinations) ;; *) echo "uso: PROVIDER_KEY=... $0 {groq|gemini|openrouter} [set|delete|clear-cooldown] | $0 status" >&2; exit 2;; esac
+case "$provider" in groq|gemini|openrouter|pollinations|xai) ;; *) echo "uso: PROVIDER_KEY=... $0 {groq|gemini|openrouter|xai} [set|delete|clear-cooldown] | $0 status" >&2; exit 2;; esac
 if [ "$action" = "set" ]; then
   [ -n "${PROVIDER_KEY:-}" ] || { echo "Defina a variável PROVIDER_KEY (a chave NÃO é aceita como argumento)." >&2; exit 2; }
   body=$(PROVIDER_KEY="$PROVIDER_KEY" python3 -c 'import json,os,sys; print(json.dumps({"action":"set","provider":sys.argv[1],"key":os.environ["PROVIDER_KEY"]}))' "$provider")

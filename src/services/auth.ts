@@ -8,6 +8,11 @@ export async function login(code: string, persistent: boolean) {
   saveSession(tokensFromResponse(j))
 }
 
+/** Confirma, no servidor, que o código digitado é o da conta desta sessão (mesmos limites do login). Não cria sessão. */
+export async function verifyCode(code: string) {
+  await post('auth', 'verify-code', { code })
+}
+
 /** Cria a conta. Retorna o código (mostrado UMA vez) e os tokens, que só são salvos após a confirmação do usuário. */
 export async function register(persistent: boolean, onProgress?: (n: number) => void) {
   const ch = await post('auth', 'challenge', {}, false)

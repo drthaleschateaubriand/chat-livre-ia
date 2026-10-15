@@ -36,7 +36,7 @@ serve(async (req) => {
   switch (action) {
     case "bootstrap": {
       const [p, c] = await Promise.all([
-        db().from("preferences").select("theme,font_size,language,memory_enabled,default_model,auto_speak").eq("user_id", uid).maybeSingle(),
+        db().from("preferences").select("theme,font_size,language,memory_enabled,default_model,auto_speak,allow_paid_auto").eq("user_id", uid).maybeSingle(),
         db().from("conversations").select(CONV_FIELDS).eq("user_id", uid).order("updated_at", { ascending: false }).limit(500),
       ]);
       return json(req, { preferences: p.data, conversations: c.data ?? [] });
@@ -132,7 +132,7 @@ serve(async (req) => {
     }
 
     case "prefs.get": {
-      const { data } = await db().from("preferences").select("theme,font_size,language,memory_enabled,default_model,auto_speak").eq("user_id", uid).maybeSingle();
+      const { data } = await db().from("preferences").select("theme,font_size,language,memory_enabled,default_model,auto_speak,allow_paid_auto").eq("user_id", uid).maybeSingle();
       return json(req, { preferences: data });
     }
     case "prefs.update": {
@@ -142,8 +142,9 @@ serve(async (req) => {
       if (body.language !== undefined) { if (!LANGS.includes(String(body.language))) throw new HttpError(400, "bad_request", "Idioma inválido."); patch.language = body.language; }
       if (body.memory_enabled !== undefined) patch.memory_enabled = body.memory_enabled === true;
       if (body.auto_speak !== undefined) patch.auto_speak = body.auto_speak === true;
+      if (body.allow_paid_auto !== undefined) patch.allow_paid_auto = body.allow_paid_auto === true;
       if (body.default_model !== undefined) { if (!MODEL_RE.test(String(body.default_model))) throw new HttpError(400, "bad_request", "Modelo inválido."); patch.default_model = body.default_model; }
-      const { data } = await db().from("preferences").update(patch).eq("user_id", uid).select("theme,font_size,language,memory_enabled,default_model,auto_speak").single();
+      const { data } = await db().from("preferences").update(patch).eq("user_id", uid).select("theme,font_size,language,memory_enabled,default_model,auto_speak,allow_paid_auto").single();
       return json(req, { preferences: data });
     }
 
@@ -156,7 +157,7 @@ serve(async (req) => {
 
     case "export.all": {
       const [p, c, m, mem, s] = await Promise.all([
-        db().from("preferences").select("theme,font_size,language,memory_enabled,default_model,auto_speak").eq("user_id", uid).maybeSingle(),
+        db().from("preferences").select("theme,font_size,language,memory_enabled,default_model,auto_speak,allow_paid_auto").eq("user_id", uid).maybeSingle(),
         db().from("conversations").select("id,title,pinned,summary,created_at,updated_at").eq("user_id", uid).order("created_at"),
         db().from("messages").select("id,conversation_id,role,content,provider,model,fallback_used,tokens_in,tokens_out,created_at").eq("user_id", uid).order("seq"),
         db().from("memories").select("id,content,created_at,updated_at").eq("user_id", uid).order("created_at"),

@@ -27,6 +27,7 @@ export interface Preferences {
   memory_enabled: boolean
   default_model: string
   auto_speak: boolean
+  allow_paid_auto: boolean
 }
 
 export interface Memory {
@@ -52,6 +53,7 @@ export interface CatalogModel {
   rank: number
   cooldownUntil: number | null
   available: boolean
+  unverified?: boolean
 }
 
 export interface CatalogProvider {
@@ -60,6 +62,7 @@ export interface CatalogProvider {
   keyUrl: string | null
   anonymous: boolean
   note: string
+  paid?: boolean
   configured: boolean
   models: CatalogModel[]
 }

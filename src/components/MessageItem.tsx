@@ -4,7 +4,7 @@ import { Markdown } from './Markdown'
 import { copyText } from '../lib/clipboard'
 import { speak, stopSpeaking, ttsSupported } from '../lib/speech'
 
-const PROVIDER_NAMES: Record<string, string> = { groq: 'Groq', gemini: 'Gemini', openrouter: 'OpenRouter', pollinations: 'Pollinations' }
+const PROVIDER_NAMES: Record<string, string> = { groq: 'Groq', gemini: 'Gemini', openrouter: 'OpenRouter', pollinations: 'Pollinations', xai: 'Grok (xAI)' }
 
 export function MessageItem({ m, isLast, busy, lang, onRegenerate, onContinue }: {
   m: Message; isLast: boolean; busy: boolean; lang: string; onRegenerate: () => void; onContinue: () => void

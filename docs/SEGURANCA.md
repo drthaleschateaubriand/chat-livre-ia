@@ -12,5 +12,7 @@
 | CORS | origens fixas (Pages + localhost); outras origens recebem 403 |
 | Segredos | `server_secrets` (privada). Chaves de IA e pepper nunca saem do servidor; token admin só como hash |
 | Cliente | tokens em `localStorage` (manter conectado) ou `sessionStorage` (sessão curta); XSS é o principal risco residual — Markdown renderizado sem HTML bruto |
+| QR de login | O QR codifica `.../#/login?c=<código>`: o código fica no **fragmento**, que não é enviado ao servidor/logs/Referer; o app limpa o fragmento (`history.replaceState`) na carga; o login segue as mesmas regras de rate limit. **O QR equivale ao código.** Em Ajustes, gerar o QR exige digitar o código (`auth/verify-code`, mesmos limites e contadores de falha do login) |
+| Provedor pago (xAI) | Desligado sem chave; fora do Automático salvo escolha manual ou preferência explícita do usuário (padrão desligada); teto diário por usuário/global; 402/403 de créditos = cota esgotada com cooldown de 6 h. Qualquer usuário pode escolher o modelo Grok manualmente quando o dono grava a chave: por isso o teto existe |
 
 Limitações conhecidas: sem recuperação de conta por desenho; quem obtiver o código tem acesso total; o IP do cliente vem do cabeçalho do gateway da Supabase (`cf-connecting-ip`).

@@ -23,7 +23,21 @@ function systemPrompt(lang: string, memories: string[], summary: string | null):
 
 interface Msg { id: string; seq: number; role: "user" | "assistant" | "system"; content: string; provider: string | null; model: string | null; fallback_used: boolean; created_at: string }
 
-async function summarize(convId: string, userId: string, summary: string | null, summaryUpto: number) {
+// Teto de segurança para o provedor PAGO (xAI): protege os créditos do dono contra abuso/loop. Valores fixos e conservadores.
+const PAID_USER_DAY = 30;
+const PAID_GLOBAL_DAY = 300;
+function paidGateFor(userId: string) {
+  return async (_providerId: string): Promise<boolean> => {
+    try {
+      const u = await rateHit("paid_user_day", userId, PAID_USER_DAY, 86400, 3600, 86400);
+      if (!u.allowed) return false;
+      const g = await rateHit("paid_global_day", "all", PAID_GLOBAL_DAY, 86400, 3600, 86400);
+      return g.allowed;
+    } catch { return false; } // na dúvida, NÃO gasta
+  };
+}
+
+async function summarize(convId: string, userId: string, summary: string | null, summaryUpto: number, allowPaid = false) {
   try {
     const { data } = await db().from("messages").select("seq,role,content").eq("conversation_id", convId).eq("user_id", userId).gt("seq", summaryUpto).order("seq");
     const msgs = data ?? [];
@@ -36,7 +50,7 @@ async function summarize(convId: string, userId: string, summary: string | null,
       { role: "system", content: "Você resume conversas de forma fiel e compacta, em português, preservando fatos, decisões, nomes, números e pedidos pendentes. Responda só com o resumo (máx. 250 palavras)." },
       { role: "user", content: `${summary ? `Resumo anterior:\n${summary}\n\n` : ""}Novas mensagens a incorporar:\n${text}` },
     ];
-    const r = await manager().complete(prompt, "auto", 600);
+    const r = await manager().complete(prompt, "auto", 600, { allowPaid, paidGate: paidGateFor(userId) });
     if (!r || !r.text.trim()) return;
     await db().from("conversations").update({ summary: r.text.trim().slice(0, 4000), summary_upto: older[older.length - 1].seq })
       .eq("id", convId).eq("user_id", userId);
@@ -105,7 +119,7 @@ serve(async (req, action) => {
   }
 
   // 3. prompt: sistema (+memórias +resumo) + janela recente dentro do orçamento
-  const { data: prefs } = await db().from("preferences").select("language,memory_enabled,default_model").eq("user_id", userId).maybeSingle();
+  const { data: prefs } = await db().from("preferences").select("language,memory_enabled,default_model,allow_paid_auto").eq("user_id", userId).maybeSingle();
   let memories: string[] = [];
   if (prefs?.memory_enabled) {
     const { data } = await db().from("memories").select("content").eq("user_id", userId).order("created_at").limit(50);
@@ -144,7 +158,7 @@ serve(async (req, action) => {
       let fallbackUsed = false;
       let tin = 0, tout = 0;
       try {
-        for await (const ev of manager().run(messages, pref, req.signal)) {
+        for await (const ev of manager().run(messages, pref, req.signal, undefined, { allowPaid: prefs?.allow_paid_auto === true, paidGate: paidGateFor(userId) })) {
           switch (ev.type) {
             case "attempt": provider = ev.provider; model = ev.model; send("attempt", { provider: ev.provider, model: ev.model }); break;
             case "delta": text += ev.text; send("delta", { t: ev.text }); break;
@@ -155,7 +169,7 @@ serve(async (req, action) => {
               const mins = Math.max(1, Math.ceil(ev.retryAfterS / 60));
               send("error", {
                 code: "all_exhausted",
-                message: `Todos os modelos gratuitos disponíveis atingiram o limite ou estão indisponíveis agora. Tente novamente em cerca de ${mins} minuto${mins > 1 ? "s" : ""}.`,
+                message: `Todos os modelos disponíveis atingiram o limite ou estão indisponíveis agora. Tente novamente em cerca de ${mins} minuto${mins > 1 ? "s" : ""}.`,
                 retry_after: ev.retryAfterS, tried: ev.tried, unconfigured: ev.unconfigured,
               });
               break;
@@ -180,7 +194,7 @@ serve(async (req, action) => {
           await db().from("conversations").update({ updated_at: new Date().toISOString() }).eq("id", convId).eq("user_id", userId);
           send("done", { message: saved });
           // resumo automático de conversas longas, fora do caminho crítico
-          const job = summarize(convId, userId, convRow?.summary ?? null, upto);
+          const job = summarize(convId, userId, convRow?.summary ?? null, upto, prefs?.allow_paid_auto === true);
           // deno-lint-ignore no-explicit-any
           const rt = (globalThis as any).EdgeRuntime;
           if (rt?.waitUntil) rt.waitUntil(job); else await job;

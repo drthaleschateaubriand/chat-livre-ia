@@ -1,13 +1,14 @@
 import { OpenAICompatProvider } from "./openai_compat.ts";
 import { ModelInfo, Provider } from "./types.ts";
 
-export const PROVIDER_IDS = ["groq", "gemini", "openrouter", "pollinations"] as const;
+export const PROVIDER_IDS = ["groq", "gemini", "openrouter", "pollinations", "xai"] as const;
 
 /** Mapa nome-do-segredo na tabela server_secrets para cada provedor com chave. */
 export const KEY_SECRET: Record<string, string> = {
   groq: "KEY_GROQ",
   gemini: "KEY_GEMINI",
   openrouter: "KEY_OPENROUTER",
+  xai: "KEY_XAI",
 };
 
 function label(id: string): string {
@@ -31,6 +32,29 @@ const geminiStatic = [
   m("gemini", "gemini-2.5-flash-lite", 30, "Gemini 2.5 Flash-Lite"),
 ];
 const geminiPreferred = new Map(geminiStatic.map((x) => [x.id, x]));
+
+// xAI (Grok): SEM plano gratuito garantido; cobrança por token na conta de quem criou a chave.
+// Nomes de modelos conforme https://docs.x.ai/docs/models (conferidos na documentação em 2026-10-15); este catálogo estático
+// só vale até haver chave: com chave, a lista vem de GET https://api.x.ai/v1/models. Ranks altos = depois de todos os gratuitos.
+const xaiStatic = [
+  { ...m("xai", "grok-4.3", 200, "Grok 4.3 (pago, não verificado)"), unverified: true },
+  { ...m("xai", "grok-4.7", 210, "Grok 4.7 (pago, não verificado)"), unverified: true },
+  { ...m("xai", "grok-4.20-0309-non-reasoning", 220, "Grok 4.20 sem raciocínio (pago, não verificado)"), unverified: true },
+];
+const xaiPreferred = new Map<string, ModelInfo>([
+  ["grok-4.3", m("xai", "grok-4.3", 200, "Grok 4.3 (pago)")],
+  ["grok-4.7", m("xai", "grok-4.7", 210, "Grok 4.7 (pago)")],
+  ["grok-4.20-0309-non-reasoning", m("xai", "grok-4.20-0309-non-reasoning", 220, "Grok 4.20 sem raciocínio (pago)")],
+]);
+
+/** xAI usa 403 (e às vezes 402) quando os créditos acabam ou o limite de gasto é atingido: tratamos como cota esgotada. */
+export function classifyXai(status: number, body: string): "quota" | "auth" | null {
+  if (status === 402) return "quota";
+  if (status === 403) return /credit|spend|spending|balance|billing|limit|exhaust|quota|payment/i.test(body) ? "quota" : "auth";
+  if (status === 401) return "auth";
+  if (status === 400 && /api[ _-]?key|incorrect|invalid.*(key|token|credential)/i.test(body)) return "auth";
+  return null;
+}
 
 export function buildProviders(fetchImpl?: typeof fetch, overrides: Partial<Record<string, string>> = {}): Provider[] {
   return [
@@ -101,6 +125,27 @@ export function buildProviders(fetchImpl?: typeof fetch, overrides: Partial<Reco
       chatUrl: overrides.pollinations ?? "https://text.pollinations.ai/openai",
       staticModels: [m("pollinations", "openai-fast", 90, "GPT-OSS 20B (Pollinations)")],
       fetchImpl,
+    }),
+    new OpenAICompatProvider({
+      id: "xai",
+      name: "xAI Grok (opcional, pago)",
+      keyUrl: "https://console.x.ai",
+      anonymous: false,
+      paid: true,
+      note: "OPCIONAL: requer chave xAI com créditos e PODE GERAR COBRANÇA na conta xAI do dono da chave (não há plano gratuito garantido; só créditos promocionais eventuais). Desligado por padrão: só ativa com chave gravada e só é usado ao escolher um modelo Grok ou ao permitir provedores com possível custo no Automático.",
+      chatUrl: overrides.xai ?? "https://api.x.ai/v1/chat/completions",
+      modelsUrl: overrides.xai ? undefined : "https://api.x.ai/v1/models",
+      liveNeedsKey: true,
+      maxTokensField: "max_completion_tokens",
+      classify: classifyXai,
+      staticModels: xaiStatic,
+      fetchImpl,
+      fromLive: (ids, st) => {
+        const hit = ids.filter((i) => xaiPreferred.has(i)).map((i) => xaiPreferred.get(i)!);
+        if (hit.length) return hit;
+        const extra = ids.filter((i) => /^grok-/.test(i) && !/imagine|video|voice|image|multi-agent|build|embed|tts|stt|vision/i.test(i)).slice(0, 3);
+        return extra.length ? extra.map((i, n) => m("xai", i, 230 + n, `${i} (pago)`)) : st;
+      },
     }),
   ];
 }
