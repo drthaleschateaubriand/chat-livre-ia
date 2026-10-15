@@ -57,6 +57,14 @@ Módulo `supabase/functions/_shared/providers/`:
 - A mensagem grava `provider`, `model` e `fallback_used`; a UI mostra discretamente "Provedor · modelo".
 - Para adicionar um provedor: implemente `Provider` (`providers/types.ts`; para APIs compatíveis com OpenAI use `OpenAICompatProvider`) e registre em `registry.ts`.
 
+### Agentes (personas com instruções salvas)
+Um **agente** faz a IA se comportar sempre do mesmo jeito: nome, descrição curta (até 200), **instruções (até 4000 caracteres)**, emoji/ícone opcional e **modelo preferido** opcional (`auto` ou `provedor|modelo`). Máx. 50 por usuário.
+- **Criar/editar/duplicar/excluir:** *Ajustes → Agentes* (validação e contador de caracteres; o servidor valida de novo). O botão **Adicionar exemplos** cria, só quando você clica, 3 agentes: *Tradutor PT-EN*, *Revisor de texto* e *Explicador simples* (nada é criado automaticamente).
+- **Usar:** o botão de agente no cabeçalho escolhe o agente da **próxima conversa** (ou **troca/remove** o da conversa aberta); o cabeçalho mostra o agente ativo. Excluir um agente **não** apaga as conversas (`agent_id` vira `null`).
+- **No prompt:** a ordem é *instrução base → agente → memórias → resumo* (`_shared/prompt.ts`). As instruções são **apenas texto**: limites, rate limit e a regra de provedor pago são aplicados no servidor, fora do prompt, e o agente não os altera.
+- **Modelo preferido:** só vale quando a conversa está em **Automático** (se você escolheu um modelo à mão, ele vence). Se o modelo do agente for de um provedor **pago** (xAI) e você não permitiu pagos em *Ajustes → Modelos*, o preferido é **ignorado** e segue o Automático gratuito.
+- **Dados:** tabela `agents` (RLS forçado, sem policies, `REVOKE`; só a Edge Function `data` acessa, sempre por `user_id` da sessão; agente de outro usuário responde 404). `conversations.agent_id` (FK `on delete set null`). A exportação JSON inclui `agents` e o `agent_id` das conversas; excluir a conta apaga os agentes (cascata).
+
 ### Histórico, memória e extras
 Conversas, mensagens, preferências e **memórias explícitas** (editáveis/excluíveis, com chave liga/desliga e injetadas no prompt de sistema quando ativas). Pesquisa no histórico, renomear, fixar, excluir, regenerar, continuar, exportar conversa (TXT/Markdown), exportar todos os dados (JSON). **Não há exclusão de conta** pela interface nem pela API para o dono (`owner_protected`). Sincronização: busca ao abrir, ao focar a aba/voltar online e *polling* leve a cada 20 s. Extras: ditado por voz (Web Speech API), ler em voz alta (speechSynthesis), idioma, tamanho de fonte, tema claro/escuro e **resumo automático** do contexto antigo em conversas longas.
 
@@ -87,9 +95,9 @@ O código é gravado em `/workspace/chat-livre-ia-private/owner_code.txt` (modo 
 ```
 src/                 components/ services/ lib/ types/   (frontend)
 supabase/
-  migrations/        esquema, funções (rate limit/uso), pepper, rotated_at, allow_paid_auto, private_owner
+  migrations/        esquema, funções (rate limit/uso), pepper, rotated_at, allow_paid_auto, private_owner, agents
   functions/
-    _shared/         code.ts, crypto.ts, db.ts, http.ts, cors.ts, session.ts, providers/
+    _shared/         code.ts, agents.ts, prompt.ts, crypto.ts, db.ts, http.ts, cors.ts, session.ts, providers/
     auth/ chat/ data/ admin-set-key/
 tests/               *.test.ts (vitest), integration.mjs, private-owner.mjs, xai-qr.mjs, ratelimit.mjs, e2e.mjs, e2e-qr.mjs (Playwright)
 scripts/             deploy-gh-pages.sh, bundle-functions.sh, set-provider-key.sh/.sql, create-owner.sh, reset-owner.sh, reset-owner-encrypted.sh, receive-reset.sh, make-icons.py
@@ -109,6 +117,8 @@ npm run build
 ## Testes
 - `npm test` — unitários (vitest): normalização/validação do código, geração sem viés, seleção/fallback/cooldown com mocks **e** com servidor HTTP local simulando 429/503/timeout/SSE; **xAI** (402/403/429, ordem no Automático, escolha manual, "não configurado", teto pago); **QR** (parse do link/dígitos, fragmento limpo, QR gerado e decodificado com jsQR).
 - `npm run test:gemini-real` — conversa REAL em produção com o login do dono (lê `owner_code.txt`, sem imprimir): confere que a resposta veio do Gemini (provider/model gravados), que com o Gemini em cooldown cai no Pollinations, e apaga a conversa. Gasta ~2 chamadas de chat grátis.
+- `npm run test:agents` — integração REAL dos agentes: CRUD, validação (limites 60/200/4000, modelo inválido), isolamento entre usuários de teste (404 em tudo), trocar/remover agente da conversa, exclusão não apaga conversa, limite de 50, exportação, e **conversa real em produção** (agente “responda só ABACAXI”, modelo preferido Pollinations: a instrução foi seguida; controle sem agente). Usa usuários de teste do admin e os apaga.
+- `npm run test:e2e-agents` — Playwright (iPhone 390×844): cria agente pela UI (validação, contador), exemplos, editar/duplicar/excluir, usa o agente numa conversa real, troca/remove e confere persistência após recarregar.
 - `npm run test:private-owner` — modelo privado em produção: `register`/`pow-challenge` 403 (nunca 429), dono único (2º dono → 409 e rejeição no banco), login do dono com `owner_code.txt`, dono não excluível, reset (código novo, antigo e sessões invalidados, mesmo usuário, histórico preservado) **em usuário de teste**, entrega criptografada sem código em texto puro. Cria usuários de teste pelo admin e os apaga.
 - `npm run test:integration` — integração contra as Edge Functions reais (cadastro fechado, usuários de teste via admin, login, sessões, isolamento A×B, acesso direto às tabelas com a chave anon, CORS, IA real, histórico, 2º dispositivo, memórias, fallback real, cotas esgotadas, resumo). Antes: `delete from public.rate_limits;`.
 - `npm run test:xai-qr` — integração real: xAI desligado/pago por padrão, preferência `allow_paid_auto`, `admin-set-key xai` (validação real), chamada real com chave inválida + fallback, `auth/verify-code`. Antes: `delete from public.rate_limits;`.

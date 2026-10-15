@@ -2,6 +2,7 @@ export interface Conversation {
   id: string
   title: string
   pinned: boolean
+  agent_id?: string | null
   created_at: string
   updated_at: string
 }
@@ -83,4 +84,15 @@ export interface SessionTokens {
   refresh: string
   accessExp: number
   persistent: boolean
+}
+
+export interface Agent {
+  id: string
+  name: string
+  description: string
+  instructions: string
+  emoji: string | null
+  preferred_model: string
+  created_at: string
+  updated_at: string
 }

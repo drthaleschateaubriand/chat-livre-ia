@@ -5,21 +5,16 @@ import { corsHeaders } from "../_shared/cors.ts";
 import { rateHit, requireSession, tooMany } from "../_shared/session.ts";
 import { manager } from "../_shared/providers/index.ts";
 import { ChatMessage } from "../_shared/providers/types.ts";
+import { buildProviders } from "../_shared/providers/registry.ts";
+import { buildSystemPrompt, resolveModelPref } from "../_shared/prompt.ts";
+
+const PAID_IDS = new Set(buildProviders().filter((p) => p.paid).map((p) => p.id));
 
 const MAX_USER_CHARS = 8000;
 const CTX_BUDGET_CHARS = 20_000; // ~5k tokens: cabe nos limites por minuto dos planos grátis
 const SUMMARY_TRIGGER_CHARS = 14_000;
 const KEEP_RECENT = 6;
 const MODEL_RE = /^(auto|[a-z]{3,20}\|[A-Za-z0-9._:\/\-]{1,100})$/;
-
-const LANG_NAMES: Record<string, string> = { "pt-BR": "português do Brasil", "en-US": "inglês", "es-ES": "espanhol" };
-
-function systemPrompt(lang: string, memories: string[], summary: string | null): string {
-  let s = `Você é o CHAT LIVRE IA, um assistente prestativo e honesto. Responda por padrão em ${LANG_NAMES[lang] ?? "português do Brasil"}, a menos que o usuário peça outro idioma. Use Markdown quando ajudar (listas, tabelas, blocos de código com a linguagem indicada). Se não souber algo, diga com clareza em vez de inventar.`;
-  if (memories.length) s += `\n\nMemórias fornecidas pelo usuário (use apenas quando relevante):\n${memories.map((m) => `- ${m}`).join("\n")}`;
-  if (summary) s += `\n\nResumo do início desta conversa (contexto anterior, já resumido):\n${summary}`;
-  return s;
-}
 
 interface Msg { id: string; seq: number; role: "user" | "assistant" | "system"; content: string; provider: string | null; model: string | null; fallback_used: boolean; created_at: string }
 
@@ -75,11 +70,13 @@ serve(async (req, action) => {
   // 1. conversa (propriedade verificada pelo user_id da sessão)
   let convId: string;
   let title = "";
+  let agentId: string | null = null; // agente da conversa (opcional)
   if (body.conversation_id) {
     convId = uuid(body.conversation_id);
-    const { data } = await db().from("conversations").select("id,title").eq("id", convId).eq("user_id", userId).maybeSingle();
+    const { data } = await db().from("conversations").select("id,title,agent_id").eq("id", convId).eq("user_id", userId).maybeSingle();
     if (!data) throw new HttpError(404, "not_found", "Conversa não encontrada.");
     title = data.title;
+    agentId = data.agent_id ?? null;
   } else {
     if (mode !== "send") throw new HttpError(400, "bad_request", "Conversa obrigatória.");
     convId = "";
@@ -91,7 +88,14 @@ serve(async (req, action) => {
     if (!content) throw new HttpError(400, "bad_request", "Mensagem vazia.");
     if (!convId) {
       title = content.replace(/\s+/g, " ").slice(0, 60);
-      const { data, error } = await db().from("conversations").insert({ user_id: userId, title }).select("id").single();
+      if (body.agent_id !== undefined && body.agent_id !== null) {
+        // o agente precisa ser do próprio usuário (404 para o de outra pessoa, sem revelar que existe)
+        const aid = uuid(body.agent_id);
+        const { data: ag } = await db().from("agents").select("id").eq("id", aid).eq("user_id", userId).maybeSingle();
+        if (!ag) throw new HttpError(404, "not_found", "Agente não encontrado.");
+        agentId = ag.id;
+      }
+      const { data, error } = await db().from("conversations").insert({ user_id: userId, title, agent_id: agentId }).select("id").single();
       if (error) throw new Error("conv_create_failed");
       convId = data.id;
     }
@@ -126,7 +130,12 @@ serve(async (req, action) => {
     memories = (data ?? []).map((m) => m.content);
   }
   const upto = Number(convRow?.summary_upto ?? 0);
-  const sys = systemPrompt(prefs?.language ?? "pt-BR", memories, upto > 0 ? convRow?.summary ?? null : null);
+  let agent: { name: string; instructions: string; preferred_model: string } | null = null;
+  if (agentId) {
+    const { data } = await db().from("agents").select("name,instructions,preferred_model").eq("id", agentId).eq("user_id", userId).maybeSingle();
+    agent = data ?? null;
+  }
+  const sys = buildSystemPrompt(prefs?.language ?? "pt-BR", memories, upto > 0 ? convRow?.summary ?? null : null, agent);
   const live = history.filter((m) => m.seq > upto && m.role !== "system");
   const picked: ChatMessage[] = [];
   let budget = CTX_BUDGET_CHARS - sys.length;
@@ -139,7 +148,8 @@ serve(async (req, action) => {
   }
   const messages: ChatMessage[] = [{ role: "system", content: sys }, ...picked];
   if (mode === "continue") messages.push({ role: "user", content: "Continue exatamente de onde você parou, sem repetir o que já foi escrito." });
-  const pref = modelPref ?? prefs?.default_model ?? "auto";
+  // modelo preferido do agente só vale com a conversa em Automático; provedor pago continua exigindo a permissão do usuário
+  const pref = resolveModelPref(modelPref ?? prefs?.default_model ?? "auto", agent?.preferred_model, (id) => PAID_IDS.has(id), prefs?.allow_paid_auto === true);
 
   // 4. stream SSE
   const enc = new TextEncoder();
@@ -150,7 +160,7 @@ serve(async (req, action) => {
         try { controller.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)); } catch { /* cliente saiu */ }
       };
       ping = setInterval(() => { try { controller.enqueue(enc.encode(": ping\n\n")); } catch { /* ignore */ } }, 8000) as unknown as number;
-      send("meta", { conversation_id: convId, title, user_message: userMsg, mode });
+      send("meta", { conversation_id: convId, title, user_message: userMsg, mode, agent_id: agentId });
       let text = "";
       let finished = false;
       let provider: string | null = null;

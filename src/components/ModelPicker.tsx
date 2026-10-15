@@ -25,7 +25,7 @@ export function ModelPicker({ value, catalog, onChange, onOpen }: { value: strin
   return (
     <div className="relative" ref={ref}>
       <button data-testid="model-picker" onClick={() => { if (!open) onOpen(); setOpen(!open) }}
-        className="flex max-w-[11rem] items-center gap-1 truncate rounded-lg px-2.5 py-1.5 text-sm font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800 sm:max-w-xs">
+        className="flex max-w-[6.5rem] items-center gap-1 truncate rounded-lg px-2 py-1.5 text-sm font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800 sm:max-w-xs">
         <span className="truncate">{modelLabel(catalog, value)}</span> <span className="text-xs opacity-60">▾</span>
       </button>
       {open && (

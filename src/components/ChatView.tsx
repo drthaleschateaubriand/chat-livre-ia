@@ -1,9 +1,10 @@
 import { useEffect, useRef } from 'react'
-import type { CatalogProvider, Conversation, Message } from '../types'
+import type { Agent, CatalogProvider, Conversation, Message } from '../types'
 import { MessageItem } from './MessageItem'
 import { Markdown } from './Markdown'
 import { Composer } from './Composer'
 import { ModelPicker } from './ModelPicker'
+import { AgentPicker, agentLabel } from './AgentPicker'
 import { conversationToMarkdown, conversationToText, download, safeName } from '../lib/exporters'
 
 export interface StreamState {
@@ -32,6 +33,10 @@ export function ChatView(p: {
   onRegenerate: () => void
   onContinue: () => void
   onMenu: () => void
+  agents: Agent[]
+  agentId: string | null
+  onAgent: (id: string | null) => void
+  onManageAgents: () => void
 }) {
   const bottom = useRef<HTMLDivElement>(null)
   const box = useRef<HTMLDivElement>(null)
@@ -56,6 +61,7 @@ export function ChatView(p: {
       <header className="pt-safe pl-safe pr-safe flex items-center gap-1 border-b border-zinc-200 bg-white/90 px-2 py-1.5 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/90">
         <button onClick={p.onMenu} aria-label="Abrir menu" data-testid="menu-btn" className="h-10 w-10 rounded-lg text-xl hover:bg-zinc-100 md:hidden dark:hover:bg-zinc-800">☰</button>
         <ModelPicker value={p.model} catalog={p.catalog} onChange={p.onModel} onOpen={p.onLoadCatalog} />
+        <AgentPicker agents={p.agents} activeId={p.agentId} onChange={p.onAgent} onManage={p.onManageAgents} forNew={!p.conversation} />
         <div className="min-w-0 flex-1 truncate px-2 text-center text-sm text-zinc-500">{p.conversation?.title ?? ''}</div>
         {p.conversation && p.messages.length > 0 && (
           <details className="relative">
@@ -75,6 +81,7 @@ export function ChatView(p: {
               <div className="text-4xl">💬</div>
               <h2 className="mt-3 text-2xl font-semibold">Como posso ajudar hoje?</h2>
               <p className="mt-2 text-sm text-zinc-500">Pergunte qualquer coisa. O modo Automático escolhe o melhor modelo gratuito disponível.</p>
+              {p.agentId && <p data-testid="agent-banner" className="mt-3 inline-block rounded-full bg-indigo-50 px-3 py-1 text-sm text-indigo-700 dark:bg-indigo-950 dark:text-indigo-200">Agente ativo: {agentLabel(p.agents.find((a) => a.id === p.agentId))}</p>}
             </div>
           )}
           {p.loading && <div className="text-center text-sm text-zinc-500">Carregando conversa…</div>}

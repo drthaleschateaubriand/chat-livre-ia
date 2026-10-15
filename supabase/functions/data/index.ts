@@ -6,12 +6,14 @@ import { validateCode } from "../_shared/code.ts";
 import { HttpError, json, readJson, serve, str, uuid } from "../_shared/http.ts";
 import { ipHash, rateHit, ratePeek, requireSession, tooMany } from "../_shared/session.ts";
 import { manager } from "../_shared/providers/index.ts";
+import { AGENT_LIMITS, AgentValidationError, validateAgentInput } from "../_shared/agents.ts";
 
 const THEMES = ["system", "light", "dark"];
 const FONTS = ["sm", "md", "lg"];
 const LANGS = ["pt-BR", "en-US", "es-ES"];
 const MODEL_RE = /^(auto|[a-z]{3,20}\|[A-Za-z0-9._:\/\-]{1,100})$/;
-const CONV_FIELDS = "id,title,pinned,created_at,updated_at";
+const CONV_FIELDS = "id,title,pinned,agent_id,created_at,updated_at";
+const AGENT_FIELDS = "id,name,description,instructions,emoji,preferred_model,created_at,updated_at";
 const MSG_FIELDS = "id,seq,conversation_id,role,content,provider,model,fallback_used,created_at";
 
 async function ownConv(userId: string, id: unknown) {
@@ -19,6 +21,18 @@ async function ownConv(userId: string, id: unknown) {
   const { data } = await db().from("conversations").select(CONV_FIELDS).eq("id", cid).eq("user_id", userId).maybeSingle();
   if (!data) throw new HttpError(404, "not_found", "Conversa não encontrada.");
   return data;
+}
+
+async function ownAgent(userId: string, id: unknown) {
+  const { data } = await db().from("agents").select(AGENT_FIELDS).eq("id", uuid(id)).eq("user_id", userId).maybeSingle();
+  if (!data) throw new HttpError(404, "not_found", "Agente não encontrado.");
+  return data;
+}
+function agentInput(body: Record<string, unknown>) {
+  try { return validateAgentInput(body); } catch (e) {
+    if (e instanceof AgentValidationError) throw new HttpError(400, "bad_request", e.message);
+    throw e;
+  }
 }
 
 function escLike(q: string): string {
@@ -35,11 +49,12 @@ serve(async (req) => {
 
   switch (action) {
     case "bootstrap": {
-      const [p, c] = await Promise.all([
+      const [p, c, ag] = await Promise.all([
         db().from("preferences").select("theme,font_size,language,memory_enabled,default_model,auto_speak,allow_paid_auto").eq("user_id", uid).maybeSingle(),
         db().from("conversations").select(CONV_FIELDS).eq("user_id", uid).order("updated_at", { ascending: false }).limit(500),
+        db().from("agents").select(AGENT_FIELDS).eq("user_id", uid).order("created_at").limit(AGENT_LIMITS.perUser),
       ]);
-      return json(req, { preferences: p.data, conversations: c.data ?? [] });
+      return json(req, { preferences: p.data, conversations: c.data ?? [], agents: ag.data ?? [] });
     }
 
     case "conv.list": {
@@ -49,9 +64,50 @@ serve(async (req) => {
 
     case "conv.create": {
       const title = typeof body.title === "string" && body.title.trim() ? body.title.trim().slice(0, 120) : "Nova conversa";
-      const { data, error } = await db().from("conversations").insert({ user_id: uid, title }).select(CONV_FIELDS).single();
+      let agent_id: string | null = null;
+      if (body.agent_id !== undefined && body.agent_id !== null) agent_id = (await ownAgent(uid, body.agent_id)).id;
+      const { data, error } = await db().from("conversations").insert({ user_id: uid, title, agent_id }).select(CONV_FIELDS).single();
       if (error) throw new Error("conv_create_failed");
       return json(req, { conversation: data }, 201);
+    }
+
+    case "conv.set_agent": {
+      // troca ou remove (agent_id: null) o agente de uma conversa; ambos precisam ser do usuário da sessão
+      await ownConv(uid, body.id);
+      const agent_id = body.agent_id === null || body.agent_id === undefined ? null : (await ownAgent(uid, body.agent_id)).id;
+      const { data } = await db().from("conversations").update({ agent_id }).eq("id", uuid(body.id)).eq("user_id", uid).select(CONV_FIELDS).single();
+      return json(req, { conversation: data });
+    }
+
+    case "agent.list": {
+      const { data } = await db().from("agents").select(AGENT_FIELDS).eq("user_id", uid).order("created_at").limit(AGENT_LIMITS.perUser);
+      return json(req, { agents: data ?? [] });
+    }
+    case "agent.create":
+    case "agent.duplicate": {
+      const { count } = await db().from("agents").select("id", { count: "exact", head: true }).eq("user_id", uid);
+      if ((count ?? 0) >= AGENT_LIMITS.perUser) throw new HttpError(400, "limit", `Limite de ${AGENT_LIMITS.perUser} agentes atingido.`);
+      let input;
+      if (action === "agent.duplicate") {
+        const src = await ownAgent(uid, body.id);
+        const name = `${src.name} (cópia)`.slice(0, AGENT_LIMITS.name);
+        input = { name, description: src.description, instructions: src.instructions, emoji: src.emoji, preferred_model: src.preferred_model };
+      } else input = agentInput(body);
+      const { data, error } = await db().from("agents").insert({ user_id: uid, ...input }).select(AGENT_FIELDS).single();
+      if (error) throw new Error("agent_create_failed");
+      return json(req, { agent: data }, 201);
+    }
+    case "agent.update": {
+      await ownAgent(uid, body.id);
+      const input = agentInput(body);
+      const { data, error } = await db().from("agents").update({ ...input, updated_at: new Date().toISOString() }).eq("id", uuid(body.id)).eq("user_id", uid).select(AGENT_FIELDS).single();
+      if (error) throw new Error("agent_update_failed");
+      return json(req, { agent: data });
+    }
+    case "agent.delete": {
+      await ownAgent(uid, body.id);
+      await db().from("agents").delete().eq("id", uuid(body.id)).eq("user_id", uid); // conversas ficam (agent_id vira null)
+      return json(req, { ok: true });
     }
 
     case "conv.rename": {
@@ -156,14 +212,15 @@ serve(async (req) => {
     }
 
     case "export.all": {
-      const [p, c, m, mem, s] = await Promise.all([
+      const [p, c, m, mem, s, ag] = await Promise.all([
         db().from("preferences").select("theme,font_size,language,memory_enabled,default_model,auto_speak,allow_paid_auto").eq("user_id", uid).maybeSingle(),
-        db().from("conversations").select("id,title,pinned,summary,created_at,updated_at").eq("user_id", uid).order("created_at"),
+        db().from("conversations").select("id,title,pinned,agent_id,summary,created_at,updated_at").eq("user_id", uid).order("created_at"),
         db().from("messages").select("id,conversation_id,role,content,provider,model,fallback_used,tokens_in,tokens_out,created_at").eq("user_id", uid).order("seq"),
         db().from("memories").select("id,content,created_at,updated_at").eq("user_id", uid).order("created_at"),
         db().from("sessions").select("id,device_name,created_at,last_seen_at,persistent,revoked_at").eq("user_id", uid),
+        db().from("agents").select(AGENT_FIELDS).eq("user_id", uid).order("created_at"),
       ]);
-      return json(req, { exported_at: new Date().toISOString(), app: "CHAT LIVRE IA", preferences: p.data, conversations: c.data ?? [], messages: m.data ?? [], memories: mem.data ?? [], devices: s.data ?? [] });
+      return json(req, { exported_at: new Date().toISOString(), app: "CHAT LIVRE IA", preferences: p.data, conversations: c.data ?? [], messages: m.data ?? [], memories: mem.data ?? [], agents: ag.data ?? [], devices: s.data ?? [] });
     }
 
     case "account.delete": {

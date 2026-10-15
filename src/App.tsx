@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { CatalogProvider, Conversation, Message, Preferences, SessionTokens } from './types'
+import type { Agent, CatalogProvider, Conversation, Message, Preferences, SessionTokens } from './types'
 import { ApiError, data, streamChat } from './services/api'
 import { clearSession, loadSession, onSessionChange } from './services/session'
 import * as auth from './services/auth'
 import { AuthScreen } from './components/AuthScreen'
 import { Sidebar } from './components/Sidebar'
 import { ChatView, type ChatError, type StreamState } from './components/ChatView'
-import { SettingsModal } from './components/SettingsModal'
+import { SettingsModal, type SettingsTab } from './components/SettingsModal'
 import { speak } from './lib/speech'
 import { takeLinkFromLocation } from './lib/qr'
 
@@ -47,7 +47,11 @@ function Main() {
   const [error, setError] = useState<ChatError | null>(null)
   const [catalog, setCatalog] = useState<CatalogProvider[] | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
-  const [settings, setSettings] = useState(false)
+  const [settings, setSettings] = useState<SettingsTab | null>(null)
+  const [agents, setAgents] = useState<Agent[]>([])
+  const [newAgent, setNewAgent] = useState<string | null>(null) // agente da PRÓXIMA conversa (quando nenhuma está aberta)
+  const newAgentRef = useRef<string | null>(null)
+  newAgentRef.current = newAgent
   const [toast, setToast] = useState('')
   const streamRef = useRef<{ convId: string | null; ctrl: AbortController } | null>(null)
   const activeRef = useRef(activeId)
@@ -64,6 +68,7 @@ function Main() {
     data('bootstrap').then((j) => {
       if (j.preferences) { setPrefs(j.preferences); applyPrefs(j.preferences) }
       setConvs(j.conversations)
+      setAgents(j.agents ?? [])
     }).catch((e) => { if (!(e instanceof ApiError && e.status === 401)) flash('Não foi possível carregar seus dados. Verifique a conexão.') })
   }, [])
 
@@ -146,15 +151,15 @@ function Main() {
     const flush = () => { raf = 0; setStream((s) => (s ? { ...s, text: acc, phase: 'streaming' } : s)) }
     let finished = false
     try {
-      await streamChat({ conversation_id: convId ?? undefined, mode, content, model: prefsRef.current.default_model }, {
+      await streamChat({ conversation_id: convId ?? undefined, mode, content, model: prefsRef.current.default_model, ...(!convId && newAgentRef.current ? { agent_id: newAgentRef.current } : {}) }, {
         signal: ctrl.signal,
         onEvent: (ev, d) => {
           if (ev === 'meta') {
             if (d.user_message) setMessages((m) => m.map((x) => (x.pending ? d.user_message : x)))
             if (d.conversation_id && streamRef.current) {
               streamRef.current.convId = d.conversation_id
-              if (!convId) { activeRef.current = d.conversation_id; go(d.conversation_id) }
-              setConvs((old) => (old.some((c) => c.id === d.conversation_id) ? old : [{ id: d.conversation_id, title: d.title, pinned: false, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, ...old]))
+              if (!convId) { activeRef.current = d.conversation_id; setNewAgent(null); go(d.conversation_id) }
+              setConvs((old) => (old.some((c) => c.id === d.conversation_id) ? old : [{ id: d.conversation_id, title: d.title, pinned: false, agent_id: d.agent_id ?? null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, ...old]))
             }
           } else if (ev === 'attempt') setStream((s) => (s && !acc ? { ...s, notice: `Consultando ${d.provider}…` } : s))
           else if (ev === 'delta') { acc += d.t; if (!raf) raf = requestAnimationFrame(flush) }
@@ -197,19 +202,36 @@ function Main() {
     try { await data('conv.pin', { id, pinned }) } catch { flash('Não foi possível fixar.'); refreshList() }
   }
 
+  const reloadAgents = useCallback(async () => {
+    try { const j = await data('agent.list'); setAgents(j.agents) } catch { /* ignora */ }
+  }, [])
+  const doAgent = async (agentId: string | null) => {
+    if (!activeRef.current) { setNewAgent(agentId); return } // conversa nova: vale a partir da primeira mensagem
+    const id = activeRef.current
+    setConvs((c) => c.map((x) => (x.id === id ? { ...x, agent_id: agentId } : x)))
+    try {
+      const j = await data('conv.set_agent', { id, agent_id: agentId })
+      // aplica o estado confirmado pelo servidor (uma listagem antiga que chegou depois não desfaz a troca)
+      if (j.conversation) setConvs((c) => c.map((x) => (x.id === id ? { ...x, agent_id: j.conversation.agent_id } : x)))
+    } catch { flash('Não foi possível trocar o agente.'); refreshList() }
+  }
+
   const conversation = convs.find((c) => c.id === activeId) ?? null
+  const currentAgentId = conversation ? conversation.agent_id ?? null : newAgent
 
   return (
     <div className="h-screen-dvh flex overflow-hidden">
       <Sidebar conversations={convs} activeId={activeId} open={menuOpen} onClose={() => setMenuOpen(false)}
-        onNew={() => go(null)} onSelect={go} onRename={doRename} onPin={doPin} onDelete={doDelete}
-        onSettings={() => setSettings(true)} onLogout={async () => { await auth.logout() }} />
+        onNew={() => { setNewAgent(null); go(null) }} onSelect={go} onRename={doRename} onPin={doPin} onDelete={doDelete}
+        onSettings={() => setSettings('appearance')} onLogout={async () => { await auth.logout() }} />
       <ChatView conversation={conversation} messages={messages} loading={loading} stream={stream} error={error}
         model={prefs.default_model} catalog={catalog} lang={prefs.language}
         onModel={(v) => updatePrefs({ default_model: v })} onLoadCatalog={loadCatalog}
         onSend={(t) => run('send', t)} onStop={() => streamRef.current?.ctrl.abort()}
-        onRegenerate={() => run('regenerate')} onContinue={() => run('continue')} onMenu={() => setMenuOpen(true)} />
-      {settings && <SettingsModal prefs={prefs} onPrefs={updatePrefs} onClose={() => setSettings(false)} onLoggedOut={loggedOut} />}
+        onRegenerate={() => run('regenerate')} onContinue={() => run('continue')} onMenu={() => setMenuOpen(true)}
+        agents={agents} agentId={currentAgentId} onAgent={doAgent} onManageAgents={() => setSettings('agents')} />
+      {settings && <SettingsModal prefs={prefs} onPrefs={updatePrefs} onClose={() => setSettings(null)} onLoggedOut={loggedOut} initialTab={settings}
+        agents={agents} onAgents={setAgents} onAgentsChanged={() => { reloadAgents(); refreshList() }} />}
       {toast && <div role="status" className="pb-safe fixed bottom-20 left-1/2 z-[60] -translate-x-1/2 rounded-lg bg-zinc-900 px-4 py-2 text-sm text-white shadow-lg">{toast}</div>}
     </div>
   )

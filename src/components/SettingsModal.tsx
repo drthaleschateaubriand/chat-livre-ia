@@ -1,21 +1,27 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { CatalogProvider, DeviceSession, Memory, Preferences, UsageRow } from '../types'
+import type { Agent, CatalogProvider, DeviceSession, Memory, Preferences, UsageRow } from '../types'
 import { data } from '../services/api'
 import * as auth from '../services/auth'
 import { download } from '../lib/exporters'
 import { formatCode, normalizeCode } from '../lib/code'
 import { QrCard } from './QrCard'
+import { AgentsTab } from './AgentsTab'
 
-type Tab = 'appearance' | 'models' | 'memory' | 'devices' | 'qr' | 'data'
-const TABS: [Tab, string][] = [['appearance', 'Aparência'], ['models', 'Modelos'], ['memory', 'Memória'], ['devices', 'Dispositivos'], ['qr', 'QR de acesso'], ['data', 'Dados']]
+type Tab = 'appearance' | 'models' | 'agents' | 'memory' | 'devices' | 'qr' | 'data'
+const TABS: [Tab, string][] = [['appearance', 'Aparência'], ['models', 'Modelos'], ['agents', 'Agentes'], ['memory', 'Memória'], ['devices', 'Dispositivos'], ['qr', 'QR de acesso'], ['data', 'Dados']]
 
-export function SettingsModal({ prefs, onPrefs, onClose, onLoggedOut }: {
+export type SettingsTab = Tab
+export function SettingsModal({ prefs, onPrefs, onClose, onLoggedOut, agents, onAgents, onAgentsChanged, initialTab }: {
+  agents: Agent[]
+  onAgents: (list: Agent[]) => void
+  onAgentsChanged: () => void
+  initialTab?: Tab
   prefs: Preferences
   onPrefs: (patch: Partial<Preferences>) => void
   onClose: () => void
   onLoggedOut: () => void
 }) {
-  const [tab, setTab] = useState<Tab>('appearance')
+  const [tab, setTab] = useState<Tab>(initialTab ?? 'appearance')
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 sm:items-center" onClick={onClose}>
       <div role="dialog" aria-label="Ajustes" data-testid="settings" onClick={(e) => e.stopPropagation()}
@@ -32,6 +38,7 @@ export function SettingsModal({ prefs, onPrefs, onClose, onLoggedOut }: {
         <div className="scroll-thin flex-1 overflow-y-auto p-4 text-sm">
           {tab === 'appearance' && <Appearance prefs={prefs} onPrefs={onPrefs} />}
           {tab === 'models' && <Models prefs={prefs} onPrefs={onPrefs} />}
+          {tab === 'agents' && <AgentsTab agents={agents} onAgents={onAgents} onChanged={onAgentsChanged} />}
           {tab === 'memory' && <Memories prefs={prefs} onPrefs={onPrefs} />}
           {tab === 'devices' && <Devices onLoggedOut={onLoggedOut} />}
           {tab === 'qr' && <QrTab />}

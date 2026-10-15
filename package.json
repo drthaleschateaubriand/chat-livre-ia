@@ -15,6 +15,8 @@
     "bundle:functions": "bash scripts/bundle-functions.sh",
     "test:xai-qr": "node tests/xai-qr.mjs",
     "test:gemini-real": "node tests/gemini-real.mjs",
+    "test:agents": "node tests/agents.mjs",
+    "test:e2e-agents": "node tests/e2e-agents.mjs",
     "test:private-owner": "node tests/private-owner.mjs",
     "test:e2e-qr": "node tests/e2e-qr.mjs",
     "test:e2e": "node tests/e2e.mjs"
