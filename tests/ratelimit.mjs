@@ -1,6 +1,6 @@
-// Testes de rate limit (bloqueio progressivo de login e limite de criação de contas) contra as Edge Functions REAIS.
+// Testes de rate limit (bloqueio progressivo de login; cadastro fechado) contra as Edge Functions REAIS.
 // Rode DEPOIS de limpar a tabela:  delete from public.rate_limits;   (o teste bloqueia o IP de quem roda por alguns minutos)
-import { call, check, register, summary } from "./lib.mjs";
+import { call, check, register, cleanupTestUsers, summary } from "./lib.mjs";
 const section = (t) => console.log(`\n▶ ${t}`);
 // ---------- 13. Rate limiting (por último: bloqueia o IP do teste) ----------
 section("Rate limit de login (bloqueio progressivo)");
@@ -14,8 +14,9 @@ check("depois de N=5 falhas => 429 (bloqueio)", statuses.slice(5).every((s) => s
 const blocked = await call("auth", "login", { code: codeC });
 check("mesmo com o código CORRETO, o IP bloqueado recebe 429 + Retry-After", blocked.status === 429 && Number(blocked.headers.get("retry-after")) > 0, String(blocked.status));
 const regs = [];
-for (let i = 0; i < 6; i++) { const r = await register(); regs.push(r.status); }
-console.log("  criação de contas em sequência:", regs.join(" "));
-check("limite de criação de contas por IP/hora => 429", regs.includes(429));
+for (let i = 0; i < 6; i++) { const r = await call("auth", "register", { website: "" }); regs.push(r.status); }
+console.log("  tentativas de cadastro em sequência:", regs.join(" "));
+check("cadastro segue FECHADO (403) mesmo com o IP bloqueado no login", regs.every((x) => x === 403));
+await cleanupTestUsers();
 
 summary();

@@ -167,6 +167,11 @@ serve(async (req) => {
     }
 
     case "account.delete": {
+      {
+        // app privado: a conta do dono não pode ser excluída pela interface (não há como recriá-la sem o ADMIN_TOKEN)
+        const { data: me } = await db().from("users").select("is_owner").eq("id", uid).single();
+        if (me?.is_owner) throw new HttpError(403, "owner_protected", "A conta do dono não pode ser excluída pelo app. Você pode apagar conversas e exportar seus dados.");
+      }
       // exige reentrada do código (proteção contra sessão roubada) + mesmo limitador de falhas do login
       const ip = await ipHash(req);
       const blocked = await ratePeek("login_fail_ip", ip);

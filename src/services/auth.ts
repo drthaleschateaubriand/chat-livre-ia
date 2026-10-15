@@ -1,6 +1,5 @@
 import { post, tokensFromResponse } from './api'
 import { clearSession, saveSession } from './session'
-import { solvePow } from '../lib/pow'
 import type { DeviceSession } from '../types'
 
 export async function login(code: string, persistent: boolean) {
@@ -11,14 +10,6 @@ export async function login(code: string, persistent: boolean) {
 /** Confirma, no servidor, que o código digitado é o da conta desta sessão (mesmos limites do login). Não cria sessão. */
 export async function verifyCode(code: string) {
   await post('auth', 'verify-code', { code })
-}
-
-/** Cria a conta. Retorna o código (mostrado UMA vez) e os tokens, que só são salvos após a confirmação do usuário. */
-export async function register(persistent: boolean, onProgress?: (n: number) => void) {
-  const ch = await post('auth', 'challenge', {}, false)
-  const nonce = await solvePow(ch.challenge, ch.bits, onProgress)
-  const j = await post('auth', 'register', { pow_challenge: ch.challenge, pow_nonce: nonce, website: '', persistent }, false)
-  return { code: j.code as string, tokens: tokensFromResponse(j) }
 }
 
 export async function logout() {

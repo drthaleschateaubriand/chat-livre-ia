@@ -1,0 +1,33 @@
+# Workflow de RESET do código do dono, controlado por quem tem acesso de escrita ao repositório.
+# O push de workflows está bloqueado pelo escopo do token usado pelo assistente; para ativar, copie este arquivo para
+# .github/workflows/reset-owner.yml (pelo site do GitHub) e crie o secret ADMIN_TOKEN (Settings → Secrets and variables → Actions).
+#
+# ⚠️ O repositório é PÚBLICO e os logs/artefatos também. Por isso o código novo NUNCA aparece aqui em texto puro:
+# o servidor o cifra com a chave pública docs/reset-owner-pubkey.pem e o runner só enxerga o texto cifrado, que só a
+# chave privada do dono (fora do repositório) decifra:  bash scripts/receive-reset.sh
+name: reset-owner
+on:
+  workflow_dispatch:
+    inputs:
+      confirmar:
+        description: 'Digite RESETAR para invalidar o código atual e gerar um novo (o histórico é mantido)'
+        required: true
+permissions:
+  contents: read
+concurrency: reset-owner
+jobs:
+  reset:
+    if: ${{ inputs.confirmar == 'RESETAR' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Gerar novo código (entrega cifrada; nada sensível é impresso)
+        env:
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+        run: bash scripts/reset-owner-encrypted.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reset-owner-enc
+          path: reset-owner.enc
+          retention-days: 1
+          if-no-files-found: error

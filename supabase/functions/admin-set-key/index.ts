@@ -6,6 +6,7 @@ import { sha256Hex, timingSafeEqual } from "../_shared/crypto.ts";
 import { HttpError, json, readJson, serve } from "../_shared/http.ts";
 import { ipHash, rateHit, ratePeek, tooMany } from "../_shared/session.ts";
 import { KEY_SECRET, PROVIDER_IDS } from "../_shared/providers/registry.ts";
+import { createUser, encryptFor, rotateCode } from "../_shared/owner.ts";
 
 const CHECKS: Record<string, (key: string) => Promise<boolean>> = {
   groq: async (k) => (await fetch("https://api.groq.com/openai/v1/models", { headers: { Authorization: `Bearer ${k}` }, signal: AbortSignal.timeout(10000) })).ok,
@@ -17,7 +18,7 @@ const CHECKS: Record<string, (key: string) => Promise<boolean>> = {
 
 serve(async (req) => {
   const ip = await ipHash(req);
-  const rl = await rateHit("admin_ip", ip, 20, 600, 120);
+  const rl = await rateHit("admin_ip", ip, 60, 600, 120);
   if (!rl.allowed) throw tooMany(rl.retryAfter);
   const blocked = await ratePeek("admin_fail_ip", ip);
   if (blocked > 0) throw tooMany(blocked);
@@ -31,6 +32,46 @@ serve(async (req) => {
   const body = await readJson(req, 20_000);
   const action = String(body.action ?? "");
   const provider = String(body.provider ?? "");
+
+  // ---- Conta única do dono (app privado) ----
+  // Devolve o código UMA vez (ou, com encrypt_to = chave pública RSA PEM, apenas o texto cifrado: usado pelo fluxo via GitHub Actions).
+  const deliver = async (code: string, extra: Record<string, unknown>) => {
+    const pub = typeof body.encrypt_to === "string" ? body.encrypt_to : "";
+    if (pub) return json(req, { ...extra, encrypted_code: await encryptFor(pub, code), alg: "RSA-OAEP-SHA256", note: "decifre com a chave privada do dono" });
+    return json(req, { ...extra, code });
+  };
+  if (action === "owner-status") {
+    const { data } = await db().from("users").select("id,created_at,last_login_at").eq("is_owner", true).maybeSingle();
+    return json(req, { owner_exists: !!data, created_at: data?.created_at ?? null, last_login_at: data?.last_login_at ?? null });
+  }
+  if (action === "admin-create-owner") {
+    const { data: ex } = await db().from("users").select("id").eq("is_owner", true).maybeSingle();
+    if (ex) throw new HttpError(409, "owner_exists", "Já existe um dono. Para trocar o código use admin-reset-owner.");
+    const u = await createUser({ owner: true });
+    await db().from("auth_attempts").insert({ kind: "owner_create", ok: true, ip_hash: ip, reason: null });
+    return await deliver(u.code, { ok: true, created: true });
+  }
+  if (action === "admin-reset-owner") {
+    // sem user_id: reseta o DONO. Com user_id: só aceita contas de TESTE (nunca outro usuário real).
+    let q = db().from("users").select("id,is_owner,is_test");
+    if (typeof body.user_id === "string") q = q.eq("id", body.user_id).eq("is_test", true);
+    else q = q.eq("is_owner", true);
+    const { data: target } = await q.maybeSingle();
+    if (!target) throw new HttpError(404, "not_found", typeof body.user_id === "string" ? "Conta de teste não encontrada." : "Não existe dono ainda. Use admin-create-owner.");
+    const code = await rotateCode(target.id as string);
+    await db().from("auth_attempts").insert({ kind: "owner_reset", ok: true, ip_hash: ip, reason: target.is_owner ? "owner" : "test" });
+    return await deliver(code, { ok: true, reset: true, sessions_revoked: true, data_preserved: true });
+  }
+  // Contas de TESTE (só para as suítes de teste; exigem ADMIN_TOKEN; marcadas is_test e apagadas em massa). Não reabrem cadastro público.
+  if (action === "admin-create-test-user") {
+    const u = await createUser({ test: true });
+    return json(req, { ok: true, user_id: u.userId, code: u.code });
+  }
+  if (action === "admin-delete-test-users") {
+    const { data, error } = await db().from("users").delete().eq("is_test", true).eq("is_owner", false).select("id");
+    if (error) throw new Error("delete_test_users_failed");
+    return json(req, { ok: true, deleted: data?.length ?? 0 });
+  }
 
   if (action === "status") {
     const out: Record<string, boolean> = {};

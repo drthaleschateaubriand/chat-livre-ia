@@ -8,7 +8,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { PNG } from "pngjs";
 import jsQR from "jsqr";
 import QRCode from "qrcode";
-import { call, check, summary } from "./lib.mjs";
+import { call, check, cleanupTestUsers, register, summary } from "./lib.mjs";
 
 const APP = process.argv[2] ?? "https://drthaleschateaubriand.github.io/chat-livre-ia/";
 const DIR = process.env.SHOTS_DIR ?? "/workspace/chat-livre-ia-private/screens";
@@ -25,32 +25,17 @@ const trackErrors = (page) => { page.on("pageerror", (e) => errors.push(String(e
 
 const browser = await chromium.launch();
 
-section("Tela de criação: QR code na revelação do código");
+section("App privado: login com código (usuário de TESTE criado pelo ADMIN) e sem criação de conta");
+const T = await register();
+CODE = T.json.code;
 const ctx1 = await browser.newContext({ ...iphone, acceptDownloads: true });
 const page = await ctx1.newPage(); watch(page); trackErrors(page);
 await page.goto(APP, { waitUntil: "networkidle" });
 check("tela de login tem o botão 'Entrar com QR code'", await page.isVisible('[data-testid="qr-login-btn"]'));
-await page.click("text=Criar conta");
-await page.click('[data-testid="create-btn"]');
-await page.waitForSelector('[data-testid="code-reveal"]', { timeout: 60000 });
-CODE = (await page.textContent('[data-testid="code-reveal"]')).replace(/\D/g, "");
-check("código de 19 dígitos exibido", /^\d{19}$/.test(CODE));
-await page.waitForSelector('[data-testid="qr-img"]', { timeout: 15000 });
-await page.locator('[data-testid="qr-card"]').scrollIntoViewIfNeeded();
-await page.screenshot({ path: `${DIR}/19-qr-revelacao-iphone.png` });
-const warn = await page.textContent('[data-testid="qr-card"]');
-check("aviso claro: QR equivale ao código / quem o tiver acessa a conta", /equivale ao seu código/i.test(warn) && /acessa a sua conta/i.test(warn));
-check("sem rolagem horizontal com o QR", await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1));
-const [dl] = await Promise.all([page.waitForEvent("download"), page.click('[data-testid="qr-download"]')]);
-const qrPath = `${TMP}/qr-conta.png`;
-await dl.saveAs(qrPath);
-check(`botão baixar salva um PNG (${dl.suggestedFilename()})`, /\.png$/.test(dl.suggestedFilename()));
-const payload = decodePng(qrPath);
-check("o PNG baixado decodifica e contém o link com FRAGMENTO #/login?c=<código>", payload === `${APP}#/login?c=${CODE}`, String(payload));
-check("o link NÃO usa query string (código só no fragmento)", !!payload && new URL(payload).search === "" && new URL(payload).hash.includes(CODE));
-await page.check('[data-testid="ack"]');
-await page.click('[data-testid="ack-continue"]');
-await page.waitForSelector('[data-testid="composer"]');
+check("não há 'Criar conta' na interface", (await page.locator("text=Criar conta").count()) === 0);
+await page.fill('[data-testid="code-input"]', CODE);
+await page.click('[data-testid="login-btn"]');
+await page.waitForSelector('[data-testid="composer"]', { timeout: 30000 });
 
 section("Configurações → QR de acesso (exige o código + confirmação)");
 await page.click('[data-testid="menu-btn"]');
@@ -67,9 +52,17 @@ await page.fill('[data-testid="qr-code-input"]', CODE);
 await page.click('[data-testid="qr-generate"]');
 await page.waitForSelector('[data-testid="qr-img"]', { timeout: 15000 });
 await page.screenshot({ path: `${DIR}/20-qr-ajustes-iphone.png` });
+await page.locator('[data-testid="qr-card"]').scrollIntoViewIfNeeded();
+await page.screenshot({ path: `${DIR}/19-qr-revelacao-iphone.png` });
+const warn = await page.textContent('[data-testid="qr-card"]');
+check("aviso claro: QR equivale ao código / quem o tiver acessa a conta", /equivale ao seu código/i.test(warn) && /acessa a sua conta/i.test(warn));
 const [dl2] = await Promise.all([page.waitForEvent("download"), page.click('[data-testid="qr-download"]')]);
-await dl2.saveAs(`${TMP}/qr-ajustes.png`);
-check("QR de Ajustes (após confirmar o código) decodifica para o mesmo link", decodePng(`${TMP}/qr-ajustes.png`) === payload);
+const qrPath = `${TMP}/qr-conta.png`;
+await dl2.saveAs(qrPath);
+check(`botão baixar salva um PNG (${dl2.suggestedFilename()})`, /\.png$/.test(dl2.suggestedFilename()));
+const payload = decodePng(qrPath);
+check("o PNG baixado decodifica e contém o link com FRAGMENTO #/login?c=<código>", payload === `${APP}#/login?c=${CODE}`, String(payload));
+check("o link NÃO usa query string (código só no fragmento)", !!payload && new URL(payload).search === "" && new URL(payload).hash.includes(CODE));
 await page.click('[data-testid="qr-hide"]');
 check("'Ocultar QR' remove a imagem", (await page.locator('[data-testid="qr-img"]').count()) === 0);
 await page.keyboard.press("Escape");
@@ -178,8 +171,7 @@ await camBrowser.close();
 check("NENHUMA requisição levou o código na URL/query (só no corpo do POST de login)", leaks.length === 0, leaks.join(" | "));
 check("sem erros de JavaScript", errors.length === 0, errors.slice(0, 3).join(" | "));
 
-// limpeza: apaga a conta de teste
-const lg = await call("auth", "login", { code: CODE });
-const del = await call("data", "account.delete", { code: CODE }, lg.json.access_token);
-check("conta de teste apagada", del.status === 200);
+// limpeza: apaga os usuários de TESTE (o dono real nunca é tocado)
+const cl = await cleanupTestUsers();
+check("usuários de teste apagados", cl.status === 200);
 summary();

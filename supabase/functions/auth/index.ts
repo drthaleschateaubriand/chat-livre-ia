@@ -1,6 +1,6 @@
-// Edge Function `auth`: criação de conta, login numérico, sessões, refresh com rotação, revogação.
+// Edge Function `auth`: (cadastro público FECHADO: app privado) login numérico, sessões, refresh com rotação, revogação.
 import { db, requireSecret } from "../_shared/db.ts";
-import { generateCode, validateCode } from "../_shared/code.ts";
+import { validateCode } from "../_shared/code.ts";
 import { hmacHex, randomToken, sha256Hex, timingSafeEqual } from "../_shared/crypto.ts";
 import { HttpError, clientIp, json, readJson, serve, str, uuid } from "../_shared/http.ts";
 import { ipHash, rateHit, ratePeek, requireSession, tooMany } from "../_shared/session.ts";
@@ -8,8 +8,6 @@ import { ipHash, rateHit, ratePeek, requireSession, tooMany } from "../_shared/s
 const ACCESS_TTL_S = 15 * 60; // acesso curto
 const REFRESH_PERSISTENT_S = 30 * 24 * 3600; // "manter conectado": 30 dias
 const REFRESH_SHORT_S = 12 * 3600; // sessão curta: 12 horas
-const POW_BITS = 14;
-const POW_TTL_MS = 10 * 60_000;
 const GENERIC_LOGIN_ERROR = "Código inválido ou não encontrado.";
 
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -52,80 +50,16 @@ async function createSession(userId: string, persistent: boolean, req: Request, 
   };
 }
 
-// --- Proof-of-work simples para criação de conta ---
-async function powChallenge(): Promise<string> {
-  const pepper = await requireSecret("PEPPER");
-  const body = `${Date.now() + POW_TTL_MS}.${randomToken(12)}`;
-  return `${body}.${(await hmacHex(pepper, "pow:" + body)).slice(0, 32)}`;
-}
-
-function leadingZeroBits(hex: string): number {
-  let bits = 0;
-  for (const ch of hex) {
-    const v = parseInt(ch, 16);
-    if (v === 0) { bits += 4; continue; }
-    bits += Math.clz32(v) - 28;
-    break;
-  }
-  return bits;
-}
-
-async function verifyPow(challenge: unknown, nonce: unknown): Promise<boolean> {
-  if (typeof challenge !== "string" || typeof nonce !== "string" || nonce.length > 40 || challenge.length > 120) return false;
-  const parts = challenge.split(".");
-  if (parts.length !== 3) return false;
-  const [exp, rnd, sig] = parts;
-  const pepper = await requireSecret("PEPPER");
-  const expected = (await hmacHex(pepper, `pow:${exp}.${rnd}`)).slice(0, 32);
-  if (!timingSafeEqual(expected, sig)) return false;
-  if (Number(exp) < Date.now()) return false;
-  if (leadingZeroBits(await sha256Hex(`${challenge}:${nonce}`)) < POW_BITS) return false;
-  // uso único
-  const used = await rateHit("pow_used", (await sha256Hex(challenge)).slice(0, 32), 1, 1200, 1200);
-  return used.allowed;
-}
-
 serve(async (req, action) => {
   const body = await readJson(req);
   const ip = await ipHash(req);
 
   switch (action) {
-    case "challenge": {
-      const r = await rateHit("challenge_ip", ip, 30, 600, 60);
-      if (!r.allowed) throw tooMany(r.retryAfter);
-      return json(req, { challenge: await powChallenge(), bits: POW_BITS });
-    }
-
-    case "register": {
-      const generic = new HttpError(400, "register_failed", "Não foi possível criar a conta agora. Tente novamente mais tarde.");
-      // honeypot: campo que humanos não veem
-      if (typeof body.website === "string" && body.website.length > 0) { await logAttempt("register", false, ip, "honeypot"); throw generic; }
-      const a = await rateHit("register_ip_hour", ip, 5, 3600, 600);
-      if (!a.allowed) { await logAttempt("register", false, ip, "ip_limit"); throw tooMany(a.retryAfter); }
-      const g = await rateHit("register_global_hour", "all", 200, 3600, 60, 3600);
-      if (!g.allowed) { await logAttempt("register", false, ip, "global_limit"); throw tooMany(g.retryAfter); }
-      if (!(await verifyPow(body.pow_challenge, body.pow_nonce))) { await logAttempt("register", false, ip, "pow"); throw new HttpError(400, "pow_failed", "Verificação anti-automação falhou. Recarregue a página e tente de novo."); }
-
-      const pepper = await requireSecret("PEPPER");
-      let userId: string | null = null;
-      let code = "";
-      for (let i = 0; i < 5 && !userId; i++) {
-        code = generateCode();
-        const { data, error } = await db().from("users").insert({
-          code_lookup: await hmacHex(pepper, "lookup:" + code),
-          code_verify: await hmacHex(pepper, "verify:" + code),
-        }).select("id").single();
-        if (!error) userId = data.id as string;
-        else if (error.code !== "23505") throw new Error("user_create_failed");
-      }
-      if (!userId) throw new Error("user_create_failed");
-      await db().from("preferences").insert({ user_id: userId });
-      const persistent = body.persistent !== false;
-      const session = await createSession(userId, persistent, req, ip, body.device_name);
-      await logAttempt("register", true, ip);
-      // O código só existe em texto puro nesta resposta. Não é guardado em lugar nenhum.
-      return json(req, { code, ...session });
-    }
+    // APP PRIVADO: não há cadastro público. A conta do dono é criada só pelo caminho admin (admin-set-key).
+    case "challenge":
+    case "pow-challenge":
+    case "register":
+      throw new HttpError(403, "registration_closed", "Este app é privado: não há criação de contas.");
 
     case "login": {
       const g = await rateHit("login_global", "all", 600, 600, 30, 600);

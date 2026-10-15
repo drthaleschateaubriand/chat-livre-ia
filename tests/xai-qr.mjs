@@ -1,7 +1,7 @@
 // Integração REAL (produção): provedor xAI desligado/pago + verify-code (QR em Ajustes). Sem chave xAI real.
 //   node tests/xai-qr.mjs     (limpe public.rate_limits antes)
 import { readFileSync, existsSync } from "node:fs";
-import { call, chat, check, register, summary } from "./lib.mjs";
+import { call, chat, check, register, cleanupTestUsers, summary } from "./lib.mjs";
 const ADMIN_FILE = process.env.ADMIN_TOKEN_FILE ?? "/workspace/chat-livre-ia-private/admin_token.txt";
 const ADMIN = process.env.ADMIN_TOKEN ?? (existsSync(ADMIN_FILE) ? readFileSync(ADMIN_FILE, "utf8").trim() : "");
 const section = (t) => console.log(`\n▶ ${t}`);
@@ -11,7 +11,7 @@ const attempts = (c) => c.events.filter((e) => e.event === "attempt").map((e) =>
 
 const A = await register({ device_name: "xai-qr A" });
 const B = await register({ device_name: "xai-qr B" });
-check("duas contas de teste criadas", A.status === 200 && B.status === 200, `${A.status}/${B.status}`);
+check("duas contas de teste criadas (via ADMIN)", A.status === 200 && B.status === 200, `${A.status}/${B.status}`);
 const tA = A.json.access_token, tB = B.json.access_token, codeA = A.json.code, codeB = B.json.code;
 
 section("xAI: desligado por padrão, marcado como pago");
@@ -104,6 +104,5 @@ const devs = await call("auth", "sessions", {}, tA);
 check("verify-code não cria sessão/dispositivo novo", devs.json.sessions?.length === 1, String(devs.json.sessions?.length));
 
 // limpeza
-await call("data", "account.delete", { code: codeA }, tA);
-await call("data", "account.delete", { code: codeB }, tB);
+await cleanupTestUsers();
 summary();

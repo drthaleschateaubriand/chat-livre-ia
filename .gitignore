@@ -29,3 +29,9 @@ dist-fn/
 .env.*.local
 chat-livre-ia-private/
 admin_token.txt
+
+# dono / reset (nunca versionar)
+owner_code*.txt
+reset_private*
+reset-owner.enc
+.owner.*

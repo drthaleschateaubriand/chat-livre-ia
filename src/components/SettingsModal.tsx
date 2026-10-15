@@ -35,7 +35,7 @@ export function SettingsModal({ prefs, onPrefs, onClose, onLoggedOut }: {
           {tab === 'memory' && <Memories prefs={prefs} onPrefs={onPrefs} />}
           {tab === 'devices' && <Devices onLoggedOut={onLoggedOut} />}
           {tab === 'qr' && <QrTab />}
-          {tab === 'data' && <DataTab onLoggedOut={onLoggedOut} />}
+          {tab === 'data' && <DataTab />}
         </div>
       </div>
     </div>
@@ -178,10 +178,7 @@ function Devices({ onLoggedOut }: { onLoggedOut: () => void }) {
   )
 }
 
-function DataTab({ onLoggedOut }: { onLoggedOut: () => void }) {
-  const [code, setCode] = useState('')
-  const [err, setErr] = useState('')
-  const [confirmDel, setConfirmDel] = useState(false)
+function DataTab() {
   return (
     <div className="space-y-6">
       <section>
@@ -189,16 +186,9 @@ function DataTab({ onLoggedOut }: { onLoggedOut: () => void }) {
         <p className="mb-2 text-zinc-600 dark:text-zinc-400">Baixa um arquivo JSON com conversas, mensagens, memórias, preferências e dispositivos.</p>
         <button className="rounded-lg border border-zinc-300 px-4 py-2 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800" onClick={async () => { const j = await data('export.all'); download(`chat-livre-ia-dados-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(j, null, 2), 'application/json') }}>⬇️ Exportar tudo (JSON)</button>
       </section>
-      <section className="rounded-xl border border-red-300 p-3 dark:border-red-800">
-        <h3 className="mb-1 font-medium text-red-600">Excluir conta e todos os dados</h3>
-        <p className="mb-2 text-zinc-600 dark:text-zinc-400">Apaga definitivamente conversas, memórias e dispositivos. Não há como desfazer.</p>
-        {!confirmDel ? <button className="rounded-lg border border-red-400 px-4 py-2 text-red-600" onClick={() => setConfirmDel(true)}>Excluir minha conta…</button> : (
-          <div className="space-y-2">
-            <input inputMode="numeric" autoComplete="off" value={code} onChange={(e) => setCode(e.target.value)} placeholder="Digite seu código para confirmar" className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 font-mono dark:border-zinc-700 dark:bg-zinc-950" />
-            {err && <p className="text-red-600">{err}</p>}
-            <button className="w-full rounded-lg bg-red-600 py-2.5 font-medium text-white disabled:opacity-50" disabled={!code.trim()} onClick={async () => { try { await data('account.delete', { code }); onLoggedOut() } catch (e) { setErr((e as Error).message) } }}>Confirmar exclusão definitiva</button>
-          </div>
-        )}
+      <section className="rounded-xl border border-zinc-300 p-3 dark:border-zinc-700" data-testid="private-note">
+        <h3 className="mb-1 font-medium">App privado</h3>
+        <p className="text-zinc-600 dark:text-zinc-400">Este app tem uma única conta (a sua). Ela não pode ser excluída pelo app, e não há criação de novas contas. Você pode apagar conversas e memórias individualmente. Se perder o código, só o dono do repositório consegue gerar um novo (sem perder o histórico).</p>
       </section>
     </div>
   )

@@ -2,27 +2,29 @@
 
 Chat estilo ChatGPT com **IAs gratuitas**, **login somente numérico** (código de 19 dígitos, sem e-mail/telefone/Google), histórico sincronizado entre dispositivos e instalável como app (PWA).
 
+> 🔒 **App PRIVADO, de um único usuário (o dono).** Não existe cadastro público: a interface não tem “Criar conta” e o servidor recusa `auth/register` e `auth/pow-challenge` com **403** sempre. A única conta é criada pelo administrador (token `ADMIN_TOKEN`, fora do Git) e há **no máximo um dono** (índice único no banco).
+
 - **App:** https://drthaleschateaubriand.github.io/chat-livre-ia/
 - **Frontend:** React + TypeScript + Vite + Tailwind (hospedado no GitHub Pages, rotas por hash `#/c/<id>`)
 - **Backend:** Supabase (Postgres + Edge Functions em Deno). O navegador **nunca** acessa tabelas direto.
 
-> ⚠️ **Aviso importante sobre o código de acesso:** o código de 19 dígitos é mostrado **uma única vez** na criação da conta. Não existe recuperação (não há e-mail nem telefone). **Se você perder o código, perde o acesso às suas conversas.** Quem tem o código acessa a conta.
+> ⚠️ **Sobre o código de acesso:** o código de 19 dígitos é mostrado **uma única vez**, na criação do dono (ou numa redefinição). Não há e-mail nem telefone. Se perder o código, a recuperação é **só pelo administrador** (veja *Recuperação do código do dono* abaixo), que gera um código novo **mantendo o histórico**. Quem tem o código acessa a conta.
 
 ---
 
 ## Como funciona
 
 ### Login numérico
-1. **Criar conta:** o servidor gera um código de 19 dígitos com `crypto.getRandomValues` e *rejection sampling* (sem viés de módulo), descarta códigos previsíveis (repetidos/sequências/padrões curtos) e o mostra uma vez (copiar, baixar `.txt`, confirmação "anotei meu código").
+1. **Código do dono:** gerado no servidor, só pelo administrador (`admin-create-owner`), com `crypto.getRandomValues` e *rejection sampling* (sem viés de módulo), descartando códigos previsíveis (repetidos/sequências/padrões curtos). É devolvido uma vez ao administrador. **Não há cadastro público**: `auth/register`, `auth/challenge` e `auth/pow-challenge` respondem 403 `registration_closed`.
 2. **Entrar:** um único campo numérico; aceita espaços/hífens, normaliza e exige 18–20 dígitos.
 3. **Nada de texto puro:** o banco guarda apenas `HMAC-SHA256(pepper, "lookup:"+código)` (índice determinístico) e `HMAC-SHA256(pepper, "verify:"+código)` (comparado em tempo constante). O *pepper* (32 bytes aleatórios) vive só na tabela privada `server_secrets`.
-4. **Anti-abuso:** rate limit no Postgres (por IP e global, janela fixa + bloqueio progressivo), limite de criação de contas por IP/hora, honeypot e *proof-of-work* (SHA-256, 14 bits) para criar conta. Tentativas são registradas **sem** o código (IP só como hash HMAC).
+4. **Anti-abuso:** rate limit no Postgres (por IP e global, janela fixa + bloqueio progressivo), limite de falhas também nas ações administrativas (token errado bloqueia por IP com backoff). Tentativas são registradas **sem** o código (IP só como hash HMAC).
 5. **Sessões:** token de acesso opaco de 32 bytes (15 min) + refresh opaco com **rotação** (30 dias em "manter conectado", 12 h em sessão curta), guardados como SHA-256. Reuso de refresh antigo (fora da janela de corrida de 20 s) revoga a sessão. Há logout, "sair de todos os dispositivos" e revogação por dispositivo. O mesmo código funciona em vários dispositivos.
 6. **Isolamento:** todas as tabelas têm RLS ligado, **nenhuma policy** e `REVOKE` para `anon/authenticated`. Só as Edge Functions (service role) leem/escrevem, e o `user_id` vem **sempre da sessão**, nunca do corpo. CORS restrito a `https://drthaleschateaubriand.github.io` e `http://localhost:5173/4173` (nunca `*`).
 
 #### Entrar com QR code
 O mesmo código também pode ser usado como **QR code** (mesmas regras de rate limit/segurança do login normal):
-- **Onde aparece:** na tela de revelação do código (criação de conta) e em *Ajustes → QR de acesso* (exige **digitar o código**, que o servidor confirma com `auth/verify-code`, mais uma caixa de confirmação; o app não guarda o código). Há botão **Baixar imagem do QR** (PNG).
+- **Onde aparece:** em *Ajustes → QR de acesso* (exige **digitar o código**, que o servidor confirma com `auth/verify-code`, mais uma caixa de confirmação; o app não guarda o código). Há botão **Baixar imagem do QR** (PNG).
 - **Conteúdo do QR:** o link `https://drthaleschateaubriand.github.io/chat-livre-ia/#/login?c=<código>`. O código vai no **fragmento (`#`)**, que o navegador nunca envia ao servidor, a logs ou ao `Referer`; nada de query string.
 - ⚠️ **O QR equivale ao código:** quem tiver a imagem/foto/print acessa a conta. Guarde-o como o código e não o compartilhe.
 - **Entrar:** tela de login → **“Entrar com QR code”** (câmera via `BarcodeDetector` quando existir, senão `jsQR`), ou **escolher uma imagem do QR** salva na galeria, ou simplesmente **abrir o link/QR com a câmera nativa do celular**: o app lê o fragmento, faz o login e **limpa o fragmento da URL** (`history.replaceState`) imediatamente. Se a permissão da câmera for negada, aparece uma mensagem com as alternativas (imagem ou digitar o código). Com uma sessão já ativa, abrir um link de QR apenas limpa o fragmento.
@@ -55,7 +57,27 @@ Módulo `supabase/functions/_shared/providers/`:
 - Para adicionar um provedor: implemente `Provider` (`providers/types.ts`; para APIs compatíveis com OpenAI use `OpenAICompatProvider`) e registre em `registry.ts`.
 
 ### Histórico, memória e extras
-Conversas, mensagens, preferências e **memórias explícitas** (editáveis/excluíveis, com chave liga/desliga e injetadas no prompt de sistema quando ativas). Pesquisa no histórico, renomear, fixar, excluir, regenerar, continuar, exportar conversa (TXT/Markdown), exportar todos os dados (JSON) e excluir conta (exige reenviar o código). Sincronização: busca ao abrir, ao focar a aba/voltar online e *polling* leve a cada 20 s. Extras: ditado por voz (Web Speech API), ler em voz alta (speechSynthesis), idioma, tamanho de fonte, tema claro/escuro e **resumo automático** do contexto antigo em conversas longas.
+Conversas, mensagens, preferências e **memórias explícitas** (editáveis/excluíveis, com chave liga/desliga e injetadas no prompt de sistema quando ativas). Pesquisa no histórico, renomear, fixar, excluir, regenerar, continuar, exportar conversa (TXT/Markdown), exportar todos os dados (JSON). **Não há exclusão de conta** pela interface nem pela API para o dono (`owner_protected`). Sincronização: busca ao abrir, ao focar a aba/voltar online e *polling* leve a cada 20 s. Extras: ditado por voz (Web Speech API), ler em voz alta (speechSynthesis), idioma, tamanho de fonte, tema claro/escuro e **resumo automático** do contexto antigo em conversas longas.
+
+---
+
+## App privado: dono, recuperação e administração
+
+**Criar o dono (uma vez, só se ainda não existir):**
+```bash
+bash scripts/create-owner.sh         # usa o ADMIN_TOKEN (arquivo fora do repo); falha com 409 se já houver dono
+```
+O código é gravado em `/workspace/chat-livre-ia-private/owner_code.txt` (modo 600, **fora do repositório**, ignorado pelo `.gitignore`) e **nunca é impresso**. Variáveis: `ADMIN_TOKEN_FILE` (ou `ADMIN_TOKEN`) e `OWNER_CODE_FILE` para mudar os caminhos.
+
+**Recuperação do código do dono (sem e-mail), controlada por você via GitHub/administrador:** a ação `admin-reset-owner` gera um código novo **para o mesmo usuário** (só troca o hash; **conversas, memórias e preferências ficam**), **revoga todas as sessões** e o código antigo deixa de funcionar.
+- **Local (seguro):** `bash scripts/reset-owner.sh --yes` (precisa do `ADMIN_TOKEN`; grava o novo código em `owner_code.txt`, sem imprimir).
+- **Via GitHub Actions (opcional):** copie `docs/reset-owner-workflow.yml` para `.github/workflows/reset-owner.yml` (o token usado aqui não tinha escopo `workflow`, por isso o arquivo está em `docs/`) e crie o *secret* `ADMIN_TOKEN` em *Settings → Secrets and variables → Actions*. Execute em *Actions → Reset owner → Run workflow* (digite `RESETAR`).
+  - ⚠️ **O repositório é público e os logs do Actions também são públicos.** Por isso o workflow **nunca imprime o código**: a função devolve o código **criptografado** com a chave pública RSA-OAEP em `docs/reset-owner-pubkey.pem`, e só o texto cifrado vai para o *artifact* `reset-owner-enc` (1 dia de retenção). Quem decifra é quem tem a **chave privada** (`reset_private.pem`, guardada fora do repo, na máquina do administrador/assistente): `bash scripts/receive-reset.sh` (aceita um arquivo `.enc` ou baixa o artifact com `gh run download`).
+  - **Limitação honesta:** sem a chave privada ninguém consegue ler o código novo, nem você. Guarde uma cópia da chave privada num lugar seguro. Se a quiser trocar, gere outro par (`openssl genrsa`/`openssl rsa -pubout`) e substitua `docs/reset-owner-pubkey.pem`.
+  - Se você não puder usar a chave privada, use o script local.
+- A API administrativa também tem `owner-status`, `admin-create-test-user` e `admin-delete-test-users` (só para testes; nunca tocam o dono). `admin-reset-owner` com `user_id` só aceita usuários **de teste**.
+
+**Garantias no banco:** `users.is_owner` com índice único parcial (`users_single_owner`): um segundo dono é rejeitado pelo próprio Postgres. `account.delete` recusa o dono (403 `owner_protected`).
 
 ---
 
@@ -64,13 +86,13 @@ Conversas, mensagens, preferências e **memórias explícitas** (editáveis/excl
 ```
 src/                 components/ services/ lib/ types/   (frontend)
 supabase/
-  migrations/        esquema, funções (rate limit/uso), pepper, rotated_at, allow_paid_auto
+  migrations/        esquema, funções (rate limit/uso), pepper, rotated_at, allow_paid_auto, private_owner
   functions/
     _shared/         code.ts, crypto.ts, db.ts, http.ts, cors.ts, session.ts, providers/
     auth/ chat/ data/ admin-set-key/
-tests/               *.test.ts (vitest), integration.mjs, xai-qr.mjs, ratelimit.mjs, e2e.mjs, e2e-qr.mjs (Playwright)
-scripts/             deploy-gh-pages.sh, bundle-functions.sh, set-provider-key.sh/.sql, make-icons.py
-docs/                deploy-workflow.yml, SEGURANCA.md
+tests/               *.test.ts (vitest), integration.mjs, private-owner.mjs, xai-qr.mjs, ratelimit.mjs, e2e.mjs, e2e-qr.mjs (Playwright)
+scripts/             deploy-gh-pages.sh, bundle-functions.sh, set-provider-key.sh/.sql, create-owner.sh, reset-owner.sh, reset-owner-encrypted.sh, receive-reset.sh, make-icons.py
+docs/                deploy-workflow.yml, reset-owner-workflow.yml, reset-owner-pubkey.pem, SEGURANCA.md
 public/              manifest, sw.js, icons/
 ```
 
@@ -85,11 +107,12 @@ npm run build
 
 ## Testes
 - `npm test` — unitários (vitest): normalização/validação do código, geração sem viés, seleção/fallback/cooldown com mocks **e** com servidor HTTP local simulando 429/503/timeout/SSE; **xAI** (402/403/429, ordem no Automático, escolha manual, "não configurado", teto pago); **QR** (parse do link/dígitos, fragmento limpo, QR gerado e decodificado com jsQR).
-- `npm run test:integration` — integração contra as Edge Functions reais (conta, login, sessões, isolamento A×B, acesso direto às tabelas com a chave anon, CORS, IA real, histórico, 2º dispositivo, memórias, fallback real, cotas esgotadas, resumo, exclusão). Antes: `delete from public.rate_limits;`.
+- `npm run test:private-owner` — modelo privado em produção: `register`/`pow-challenge` 403 (nunca 429), dono único (2º dono → 409 e rejeição no banco), login do dono com `owner_code.txt`, dono não excluível, reset (código novo, antigo e sessões invalidados, mesmo usuário, histórico preservado) **em usuário de teste**, entrega criptografada sem código em texto puro. Cria usuários de teste pelo admin e os apaga.
+- `npm run test:integration` — integração contra as Edge Functions reais (cadastro fechado, usuários de teste via admin, login, sessões, isolamento A×B, acesso direto às tabelas com a chave anon, CORS, IA real, histórico, 2º dispositivo, memórias, fallback real, cotas esgotadas, resumo). Antes: `delete from public.rate_limits;`.
 - `npm run test:xai-qr` — integração real: xAI desligado/pago por padrão, preferência `allow_paid_auto`, `admin-set-key xai` (validação real), chamada real com chave inválida + fallback, `auth/verify-code`. Antes: `delete from public.rate_limits;`.
-- `npm run test:ratelimit` — bloqueio progressivo de login e limite de criação de contas (bloqueia seu IP por alguns minutos; limpe `rate_limits` depois).
-- `node tests/e2e.mjs` — Playwright/Chromium contra o GitHub Pages (viewport iPhone 390×844, Android, desktop) com *screenshots*.
-- `npm run test:e2e-qr` — Playwright: gera o QR, baixa o PNG, decodifica, loga pelo link com fragmento (URL limpa), por imagem da galeria e pela **câmera FAKE do Chromium** alimentada com vídeo do QR; erros de QR/permissão negada; confere que o código nunca vai em URL/query. **Câmera física de celular não foi testada.**
+- `npm run test:ratelimit` — bloqueio progressivo de login e cadastro sempre 403 (bloqueia seu IP por alguns minutos; limpe `rate_limits` depois).
+- `node tests/e2e.mjs` — Playwright/Chromium contra o GitHub Pages (UI sem “Criar conta”, login com usuário de teste e com o dono real em modo leitura) (viewport iPhone 390×844, Android, desktop) com *screenshots*.
+- `npm run test:e2e-qr` — Playwright: loga com usuário de teste, gera o QR em Ajustes, baixa o PNG, decodifica, loga pelo link com fragmento (URL limpa), por imagem da galeria e pela **câmera FAKE do Chromium** alimentada com vídeo do QR; erros de QR/permissão negada; confere que o código nunca vai em URL/query. **Câmera física de celular não foi testada.**
 
 ## Deploy
 ### Frontend (GitHub Pages)
@@ -100,7 +123,7 @@ npm run deploy      # build + push do dist/ para a branch gh-pages (Settings →
 Para usar GitHub Actions no lugar: copie `docs/deploy-workflow.yml` para `.github/workflows/deploy.yml` (pelo site do GitHub ou com um token com escopo `workflow`) e em *Settings → Pages* escolha **Source: GitHub Actions**.
 
 ### Backend (Supabase)
-Migrações em `supabase/migrations/` (aplique em ordem). Edge Functions: com a CLI oficial `supabase functions deploy auth chat data admin-set-key --no-verify-jwt` (a autenticação é própria; `verify_jwt=false` de propósito) ou, sem CLI, `bash scripts/bundle-functions.sh` (gera `dist-fn/*.js` com Deno) e publique cada arquivo como `index.ts`.
+Migrações em `supabase/migrations/` (aplique em ordem). Edge Functions (reimplante `auth data admin-set-key` após mudanças): com a CLI oficial `supabase functions deploy auth chat data admin-set-key --no-verify-jwt` (a autenticação é própria; `verify_jwt=false` de propósito) ou, sem CLI, `bash scripts/bundle-functions.sh` (gera `dist-fn/*.js` com Deno) e publique cada arquivo como `index.ts`.
 
 ## Como obter e cadastrar as chaves gratuitas
 | Provedor | Onde obter a chave grátis |

@@ -2,7 +2,7 @@
 //   node tests/integration.mjs            (FN_URL, SUPABASE_URL e SUPABASE_ANON_KEY podem ser sobrescritos)
 // Pré-requisito: limpar rate_limits antes (o limite de criação de contas é 5/hora/IP):  delete from public.rate_limits;
 import { readFileSync, existsSync } from "node:fs";
-import { BASE, ORIGIN, call, chat, check, register, summary } from "./lib.mjs";
+import { BASE, ORIGIN, call, chat, check, register, cleanupTestUsers, summary } from "./lib.mjs";
 
 const SUPA = process.env.SUPABASE_URL ?? BASE.replace("/functions/v1", "");
 const ANON = process.env.SUPABASE_ANON_KEY ?? "sb_publishable_NhfOo15BXXABSMY5yfpARw_fKd-12wt";
@@ -14,23 +14,27 @@ const admin = (body, token = ADMIN) => call("admin-set-key", "x", body, undefine
 const doneText = (c) => c.events.find((e) => e.event === "done")?.data.message;
 
 // ---------- 1. Criação de conta ----------
-section("Criação de conta (código de 19 dígitos, PoW, honeypot)");
+section("App PRIVADO: cadastro público FECHADO; usuários de teste só via ADMIN");
+check("token admin disponível (necessário para criar usuários de teste)", !!ADMIN);
 const A = await register({ device_name: "Teste A (aparelho 1)" });
-check("register retorna 200", A.status === 200, JSON.stringify(A.json));
+check("usuário de teste criado pelo caminho ADMIN e logado", A.status === 200, JSON.stringify(A.json));
 check("código tem 19 dígitos numéricos", /^\d{19}$/.test(A.json.code ?? ""));
 check("tokens opacos de 32 bytes (43 chars base64url)", A.json.access_token?.length === 43 && A.json.refresh_token?.length === 43);
 const codeA = A.json.code;
-const noPow = await call("auth", "register", { website: "" });
-check("register sem proof-of-work é recusado (400)", noPow.status === 400, JSON.stringify(noPow));
-const ch = await call("auth", "challenge");
-const hp = await call("auth", "register", { pow_challenge: ch.json.challenge, pow_nonce: "1", website: "http://spam" });
-check("honeypot preenchido é recusado (400)", hp.status === 400);
-const { solvePow } = await import("./lib.mjs");
-const nonce = solvePow(ch.json.challenge, ch.json.bits);
-const r1 = await call("auth", "register", { pow_challenge: ch.json.challenge, pow_nonce: nonce, website: "" });
-const r2 = await call("auth", "register", { pow_challenge: ch.json.challenge, pow_nonce: nonce, website: "" });
-check("desafio PoW válido funciona uma vez", r1.status === 200);
-check("reuso do mesmo desafio PoW é recusado", r2.status === 400, String(r2.status));
+const closed = [];
+for (const [act, body] of [["register", { website: "" }], ["register", { pow_challenge: "x.y.z", pow_nonce: "1", website: "" }], ["challenge", {}], ["pow-challenge", {}], ["register", { persistent: true, device_name: "x" }], ["register", {}], ["challenge", {}]]) {
+  const r = await call("auth", act, body);
+  closed.push(r.status);
+  if (r.status !== 403 || r.json.error !== "registration_closed") console.log("  inesperado:", act, r.status, JSON.stringify(r.json));
+}
+check("auth/register, auth/challenge e auth/pow-challenge recusam SEMPRE (403 registration_closed), sem virar 429", closed.every((x) => x === 403), closed.join(","));
+check("admin-create-test-user sem token => 401 (não é cadastro público)", (await admin({ action: "admin-create-test-user" }, "")).status === 401);
+const os = await admin({ action: "owner-status" });
+check("dono real já existe (owner-status)", os.status === 200 && os.json.owner_exists === true, JSON.stringify(os.json));
+const second = await admin({ action: "admin-create-owner" });
+check("SEGUNDO dono é impossível (admin-create-owner => 409 owner_exists)", second.status === 409 && second.json.error === "owner_exists", JSON.stringify(second.json));
+check("admin-create-owner sem token => 401", (await admin({ action: "admin-create-owner" }, "")).status === 401);
+const r1 = await register();
 const codeB0 = r1.json.code;
 
 // ---------- 2. Login ----------
@@ -270,4 +274,6 @@ check("login com a conta excluída falha", gone.status === 401);
 const bLogin = await call("auth", "login", { code: codeB0 });
 await call("data", "account.delete", { code: codeB0 }, bLogin.json.access_token);
 
+const cl = await cleanupTestUsers();
+check("usuários de teste restantes foram apagados (dono preservado)", cl.status === 200);
 summary();

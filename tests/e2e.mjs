@@ -3,7 +3,8 @@
 // Obs.: usa o motor Chromium com perfil/viewport de iPhone (não é o WebKit real do iOS).
 import { chromium, devices } from "playwright";
 import { mkdirSync } from "node:fs";
-import { check, summary } from "./lib.mjs";
+import { OWNER_FILE, call, check, cleanupTestUsers, register, summary } from "./lib.mjs";
+import { readFileSync } from "node:fs";
 
 const URL = process.argv[2] ?? "https://drthaleschateaubriand.github.io/chat-livre-ia/";
 const DIR = process.env.SHOTS_DIR ?? "/workspace/chat-livre-ia-private/screens";
@@ -35,21 +36,21 @@ check("manifest acessível com ícones", man.ok && man.icons >= 4, JSON.stringif
 const iconOk = await page.evaluate(async () => (await fetch(new URL("icons/icon-512.png", document.baseURI))).ok);
 check("ícone 512 acessível", iconOk);
 
-section("Criar conta e revelar código (uma vez)");
-await page.click("text=Criar conta");
-await shot("02-criar-conta");
-await page.click('[data-testid="create-btn"]');
-await page.waitForSelector('[data-testid="code-reveal"]', { timeout: 60000 });
-await shot("03-codigo-revelado");
-const codeShown = (await page.textContent('[data-testid="code-reveal"]')).replace(/\D/g, "");
-check("código de 19 dígitos exibido", /^\d{19}$/.test(codeShown));
-check("botão continuar bloqueado até confirmar", await page.isDisabled('[data-testid="ack-continue"]'));
-check("sem rolagem horizontal na tela do código", await noHScroll());
-await page.check('[data-testid="ack"]');
-await page.click('[data-testid="ack-continue"]');
-await page.waitForSelector('[data-testid="composer"]');
+section("App PRIVADO: sem criação de conta na interface");
+check("não existe botão/aba 'Criar conta'", (await page.locator("text=Criar conta").count()) === 0 && (await page.locator('[data-testid="create-btn"]').count()) === 0);
+check("não existe 'Gerar meu código'", (await page.locator("text=Gerar meu código").count()) === 0);
+check("tela de login diz que o app é privado", /App privado/.test(await page.textContent("body")));
+check("botão 'Entrar com QR code' presente", await page.isVisible('[data-testid="qr-login-btn"]'));
+await shot("02-login-privado");
+
+section("Login com código (usuário de TESTE criado pelo ADMIN; sem cadastro público)");
+const T = await register();
+const codeShown = T.json.code;
+await page.fill('[data-testid="code-input"]', codeShown);
+await page.click('[data-testid="login-btn"]');
+await page.waitForSelector('[data-testid="composer"]', { timeout: 30000 });
 await shot("04-chat-vazio");
-check("entrou no chat após confirmar", true);
+check("entrou no chat com o código", true);
 
 section("Conversa com IA real (streaming)");
 await page.fill('[data-testid="composer"]', "Responda em português, em no máximo 2 frases: o que é o Pix?");
@@ -175,17 +176,28 @@ await shot("17-desktop-chat", p3);
 check("desktop: barra lateral fixa visível", await p3.isVisible('[data-testid="sidebar"]'));
 await ctx3.close();
 
-section("Excluir conta pela interface (limpeza)");
+section("Ajustes → Dados: sem exclusão de conta (app privado)");
 await page.click('[data-testid="menu-btn"]');
 await page.click('[data-testid="settings-btn"]');
 await page.click("button:has-text('Dados')");
-await page.click("text=Excluir minha conta…");
-await page.fill('input[placeholder="Digite seu código para confirmar"]', codeShown);
-await shot("18-excluir-conta");
-await page.click("text=Confirmar exclusão definitiva");
-await page.waitForSelector('[data-testid="code-input"]', { timeout: 20000 });
-check("conta excluída: volta para a tela de login", true);
+await shot("18-dados-privado");
+check("aviso 'App privado' presente e SEM botão de excluir conta", (await page.isVisible('[data-testid="private-note"]')) && (await page.locator("text=Excluir minha conta").count()) === 0);
 
+section("DONO REAL: login pela interface com o código de owner_code.txt (somente leitura)");
+const ownerCode = readFileSync(OWNER_FILE, "utf8").trim();
+const ctxO = await browser.newContext({ ...iphone });
+const pO = await ctxO.newPage();
+await pO.goto(URL, { waitUntil: "networkidle" });
+await pO.fill('[data-testid="code-input"]', ownerCode);
+await pO.click('[data-testid="login-btn"]');
+await pO.waitForSelector('[data-testid="composer"]', { timeout: 30000 });
+await shot("25-dono-logado-iphone", pO);
+check("o código do dono em owner_code.txt entra no app em produção (UI)", true);
+const ownerSess = JSON.parse(await pO.evaluate(() => localStorage.getItem("cli.session")));
+await call("auth", "logout", {}, ownerSess.access);
+await ctxO.close();
+
+await cleanupTestUsers();
 check("sem erros de JavaScript no console", errors.length === 0, errors.slice(0, 3).join(" | "));
 await browser.close();
 summary();

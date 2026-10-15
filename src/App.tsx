@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CatalogProvider, Conversation, Message, Preferences, SessionTokens } from './types'
 import { ApiError, data, streamChat } from './services/api'
-import { clearSession, loadSession, onSessionChange, saveSession } from './services/session'
+import { clearSession, loadSession, onSessionChange } from './services/session'
 import * as auth from './services/auth'
-import { AuthScreen, type Reveal } from './components/AuthScreen'
-import { CodeReveal } from './components/CodeReveal'
+import { AuthScreen } from './components/AuthScreen'
 import { Sidebar } from './components/Sidebar'
 import { ChatView, type ChatError, type StreamState } from './components/ChatView'
 import { SettingsModal } from './components/SettingsModal'
@@ -32,13 +31,9 @@ function routeId(): string | null {
 
 export default function App() {
   const [session, setSession] = useState<SessionTokens | null>(loadSession())
-  const [reveal, setReveal] = useState<Reveal | null>(null)
   useEffect(() => onSessionChange(() => setSession(loadSession())), [])
 
-  if (reveal) {
-    return <CodeReveal code={reveal.code} onConfirm={() => { saveSession(reveal.tokens); setReveal(null) }} />
-  }
-  if (!session) return <AuthScreen onReveal={setReveal} />
+  if (!session) return <AuthScreen />
   return <Main key={session.refresh.slice(0, 8) /* remonta ao trocar de sessão */ } />
 }
 
