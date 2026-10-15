@@ -26,12 +26,38 @@ const groqStatic = [
 ];
 const groqPreferred = new Map(groqStatic.map((x) => [x.id, x]));
 
+// Gemini: catálogo conferido com chave real em 2026-10-15 (gemini-2.5-* e 2.0-flash retornam 404 "no longer available to new users").
+// Ranks: Groq (10…) e Gemini ficam ANTES de OpenRouter e Pollinations (90) no Automático. 3.7/3.8 têm rank um pouco pior
+// porque deram 503 "high demand" (transitório) nos testes; mesmo assim ficam como reserva.
 const geminiStatic = [
-  m("gemini", "gemini-2.5-flash", 12, "Gemini 2.5 Flash"),
-  m("gemini", "gemini-2.0-flash", 14, "Gemini 2.0 Flash"),
-  m("gemini", "gemini-2.5-flash-lite", 30, "Gemini 2.5 Flash-Lite"),
+  m("gemini", "gemini-3.5-flash", 12, "Gemini 3.5 Flash"),
+  m("gemini", "gemini-3.5-flash-lite", 15, "Gemini 3.5 Flash-Lite"),
+  m("gemini", "gemini-flash-lite-latest", 17, "Gemini Flash-Lite (latest)"),
 ];
-const geminiPreferred = new Map(geminiStatic.map((x) => [x.id, x]));
+const geminiPreferred = new Map<string, ModelInfo>([
+  ...geminiStatic.map((x) => [x.id, x] as [string, ModelInfo]),
+  ["gemini-3.8-flash", m("gemini", "gemini-3.8-flash", 19, "Gemini 3.8 Flash")],
+  ["gemini-3.7-flash", m("gemini", "gemini-3.7-flash", 20, "Gemini 3.7 Flash")],
+  ["gemini-flash-latest", m("gemini", "gemini-flash-latest", 21, "Gemini Flash (latest)")],
+]);
+/** Fora da lista de chat: imagem, voz (TTS), transcrição, música, robótica, computer-use, pesquisa profunda, agentes, omni, embeddings… */
+export const GEMINI_NON_CHAT = /tts|image|transcribe|lyria|robotics|computer-use|deep-research|antigravity|omni|nano-banana|embedding|aqa|live|audio|customtools|imagen|veo/i;
+/** Resposta de GET /v1beta/models: só modelos que suportam generateContent (nomes "models/<id>"). */
+export function parseGeminiModels(j: unknown): string[] {
+  const ms = (j as { models?: { name?: string; supportedGenerationMethods?: string[] }[] })?.models;
+  if (!Array.isArray(ms)) return [];
+  return ms
+    .filter((x) => x?.name && Array.isArray(x.supportedGenerationMethods) && x.supportedGenerationMethods.includes("generateContent"))
+    .map((x) => String(x.name).replace(/^models\//, ""));
+}
+export function geminiFromLive(ids0: string[], st: ModelInfo[]): ModelInfo[] {
+  const ids = ids0.map((i) => i.replace(/^models\//, "")).filter((i) => !GEMINI_NON_CHAT.test(i));
+  const hit = ids.filter((i) => geminiPreferred.has(i)).map((i) => geminiPreferred.get(i)!);
+  if (hit.length) return hit;
+  // nenhum preferido na lista ao vivo: usa o que houver de Flash de texto estável (sem preview/exp)
+  const extra = ids.filter((i) => /^gemini-.*flash/.test(i) && !/preview|exp|thinking|8b/.test(i)).slice(0, 3);
+  return extra.length ? extra.map((i, n) => m("gemini", i, 30 + n)) : st;
+}
 
 // xAI (Grok): SEM plano gratuito garantido; cobrança por token na conta de quem criou a chave.
 // Nomes de modelos conforme https://docs.x.ai/docs/models (conferidos na documentação em 2026-10-15); este catálogo estático
@@ -83,17 +109,14 @@ export function buildProviders(fetchImpl?: typeof fetch, overrides: Partial<Reco
       anonymous: false,
       note: "Plano grátis do Google AI Studio, com limites por modelo e dados que podem ser usados para melhorar produtos do Google.",
       chatUrl: overrides.gemini ?? "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-      modelsUrl: overrides.gemini ? undefined : "https://generativelanguage.googleapis.com/v1beta/openai/models",
+      // listagem nativa (traz supportedGenerationMethods); chaves novas "AQ." só funcionam aqui com x-goog-api-key
+      modelsUrl: overrides.gemini ? undefined : "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
+      modelsHeaders: (k) => ({ "x-goog-api-key": k }),
+      parseModels: parseGeminiModels,
       liveNeedsKey: true,
       staticModels: geminiStatic,
       fetchImpl,
-      fromLive: (ids0, st) => {
-        const ids = ids0.map((i) => i.replace(/^models\//, ""));
-        const hit = ids.filter((i) => geminiPreferred.has(i)).map((i) => geminiPreferred.get(i)!);
-        if (hit.length) return hit;
-        const extra = ids.filter((i) => /^gemini-.*flash/.test(i) && !/preview|exp|image|tts|live|audio|embedding|thinking|8b/.test(i)).slice(0, 3);
-        return extra.length ? extra.map((i, n) => m("gemini", i, 35 + n)) : st;
-      },
+      fromLive: geminiFromLive,
     }),
     new OpenAICompatProvider({
       id: "openrouter",

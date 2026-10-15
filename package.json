@@ -14,6 +14,7 @@
     "deploy": "bash scripts/deploy-gh-pages.sh",
     "bundle:functions": "bash scripts/bundle-functions.sh",
     "test:xai-qr": "node tests/xai-qr.mjs",
+    "test:gemini-real": "node tests/gemini-real.mjs",
     "test:private-owner": "node tests/private-owner.mjs",
     "test:e2e-qr": "node tests/e2e-qr.mjs",
     "test:e2e": "node tests/e2e.mjs"

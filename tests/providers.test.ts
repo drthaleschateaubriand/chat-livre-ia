@@ -430,3 +430,73 @@ describe('xAI Grok (opcional, pago) — mock HTTP local', () => {
     expect(ms.some((x) => x.unverified)).toBe(false)
   })
 })
+
+// ---------------- Gemini: catálogo atual, lista ao vivo e ordem do Automático ----------------
+const GEM_LIVE = {
+  models: [
+    'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-flash-lite-latest', 'gemini-flash-latest',
+    'gemini-3.7-flash', 'gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.8-flash-tts', 'gemini-3.1-flash-image', 'gemini-3.5-transcribe',
+    'lyria-3.5', 'gemini-robotics-er-2-preview', 'gemini-2.5-computer-use-preview-10-2025', 'deep-research-pro-preview-12-2025',
+    'antigravity-preview-latest', 'gemini-omni-1.1-flash', 'nano-banana-pro-preview', 'gemini-embedding-001', 'gemma-4-31b-it',
+  ].map((n) => ({ name: `models/${n}`, supportedGenerationMethods: n.includes('embedding') ? ['embedContent'] : ['generateContent'] })),
+}
+const fakeFetch = (async (url: string, init?: RequestInit) => {
+  const h = new Headers(init?.headers)
+  if (!String(url).includes('/v1beta/models') || h.get('x-goog-api-key') !== 'AQ.fake') return new Response('{}', { status: 401 })
+  return new Response(JSON.stringify(GEM_LIVE), { status: 200 })
+}) as unknown as typeof fetch
+
+describe('Gemini (catálogo atual)', () => {
+  it('lista ao vivo (generateContent) só devolve modelos de chat atuais, sem 2.5/2.0 nem imagem/TTS/etc', async () => {
+    const gem = buildProviders(fakeFetch).find((p) => p.id === 'gemini')!
+    const ms = await gem.listModels('AQ.fake')
+    const ids = ms.map((x) => x.id)
+    expect(ids).toEqual(expect.arrayContaining(['gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-flash-lite-latest', 'gemini-3.7-flash', 'gemini-3.8-flash', 'gemini-flash-latest']))
+    expect(ids.some((i) => /2\.5|2\.0|tts|image|transcribe|lyria|robotics|computer-use|deep-research|antigravity|omni|nano-banana|embedding|gemma/.test(i))).toBe(false)
+    const rank = (i: string) => ms.find((x) => x.id === i)!.rank
+    expect(rank('gemini-3.5-flash')).toBeLessThan(rank('gemini-3.5-flash-lite'))
+    expect(rank('gemini-3.5-flash-lite')).toBeLessThan(rank('gemini-flash-lite-latest'))
+    expect(rank('gemini-flash-lite-latest')).toBeLessThan(rank('gemini-3.8-flash'))
+    expect(rank('gemini-3.8-flash')).toBeLessThan(rank('gemini-3.7-flash'))
+  })
+  it('modelo preferido que sumiu da lista ao vivo não é oferecido; se a listagem falha, usa o catálogo estático atual', async () => {
+    const live = { models: [{ name: 'models/gemini-3.5-flash', supportedGenerationMethods: ['generateContent'] }] }
+    const g1 = buildProviders((async () => new Response(JSON.stringify(live))) as unknown as typeof fetch).find((p) => p.id === 'gemini')!
+    expect((await g1.listModels('k')).map((x) => x.id)).toEqual(['gemini-3.5-flash'])
+    const g2 = buildProviders((async () => new Response('x', { status: 500 })) as unknown as typeof fetch).find((p) => p.id === 'gemini')!
+    expect((await g2.listModels('k')).map((x) => x.id)).toEqual(['gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-flash-lite-latest'])
+  })
+  it('sem chave: não configurado', () => {
+    expect(buildProviders().find((p) => p.id === 'gemini')!.configured(null)).toBe(false)
+  })
+  it('404 "no longer available to new users" vira bad_model (cooldown só do modelo, não do provedor)', async () => {
+    const srv = createServer((_q, r) => { r.statusCode = 404; r.end('{"error":{"message":"This model models/gemini-2.5-flash is no longer available to new users."}}') })
+    await new Promise<void>((ok) => srv.listen(0, ok))
+    const url = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`
+    const g = buildProviders(undefined, { gemini: url }).find((p) => p.id === 'gemini')!
+    let err: ProviderError | null = null
+    try { for await (const _ of g.stream('gemini-2.5-flash', msgs, 'k', { firstByteTimeoutMs: 2000, idleTimeoutMs: 2000 })) { /* */ } } catch (e) { err = e as ProviderError }
+    srv.close()
+    expect(err).toMatchObject({ kind: 'bad_model', status: 404 })
+    expect(cooldownFor(err!).scope).toBe('model')
+  })
+  it('Automático: Groq e Gemini vêm ANTES do Pollinations; Pollinations é o último gratuito', async () => {
+    const ps = buildProviders(fakeFetch)
+    const m = new ProviderManager({ providers: ps, getKey: async (id) => (id === 'groq' ? 'gsk_fake' : id === 'gemini' ? 'AQ.fake' : null), store: new MemStore() })
+    const plan = await m.plan('auto')
+    const order = plan.candidates.map((c) => c.p.id)
+    expect(order.at(-1)).toBe('pollinations')
+    expect(order.indexOf('groq')).toBeLessThan(order.indexOf('pollinations'))
+    expect(order.indexOf('gemini')).toBeLessThan(order.indexOf('pollinations'))
+    expect(order[0]).toBe('groq')
+    expect(order).not.toContain('xai')
+  })
+  it('Gemini em cooldown (modelo/provedor) => cai para o Pollinations', async () => {
+    const store = new MemStore()
+    const gem = fake('gemini', 12, () => new ProviderError('server', 'HTTP 503 high demand', 503))
+    const poll = fake('pollinations', 90, () => text('P'), { anonymous: true })
+    const m = new ProviderManager({ providers: [gem, poll], getKey: async (id) => (id === 'gemini' ? 'k' : null), store })
+    const ev = await collect(m)
+    expect(ev.find((e) => e.type === 'done')).toMatchObject({ provider: 'pollinations', fallbackUsed: true })
+  })
+})

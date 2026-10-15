@@ -36,7 +36,7 @@ Módulo `supabase/functions/_shared/providers/`:
 |---|---|---|
 | **Pollinations** (`text.pollinations.ai/openai`) | não precisa | API oficial anônima; sempre disponível como último recurso |
 | **Groq** | grátis | `llama-3.3-70b-versatile`, `llama-3.1-8b-instant`, `openai/gpt-oss-*` (lista real consultada pela API quando há chave) |
-| **Google Gemini** | grátis | `gemini-2.5-flash`, `gemini-2.0-flash`… (lista real pela API oficial quando há chave) |
+| **Google Gemini** | grátis | `gemini-3.5-flash` (principal), `gemini-3.5-flash-lite` e `gemini-flash-lite-latest` (reserva), depois `gemini-3.8-flash`, `gemini-3.7-flash` e `gemini-flash-latest` (rank um pouco pior: deram 503 “high demand” transitório). Conferido com chave real em 15/10/2026: os `gemini-2.5-*`/`2.0-flash` retornam 404 “no longer available to new users”. Com chave, a lista vem de `GET /v1beta/models` (só `generateContent`), cruzada com o catálogo preferido; modelos de imagem/TTS/transcrição/lyria/robotics/computer-use/deep-research/antigravity/omni/nano-banana/embedding **nunca** entram no chat. Chaves novas (`AQ.…`) funcionam: a listagem usa `x-goog-api-key` e o chat (endpoint OpenAI-compatível) usa `Authorization: Bearer` |
 | **OpenRouter** | grátis | somente modelos com sufixo `:free` (lista pública consultada ao vivo) |
 | **xAI Grok** | ⚠️ **paga, opcional** | API oficial OpenAI-compatível (`https://api.x.ai/v1/chat/completions`). **Opcional, requer chave com créditos; pode gerar cobrança na conta xAI do dono da chave.** Sem plano gratuito garantido (só créditos promocionais eventuais) |
 
@@ -48,6 +48,7 @@ Módulo `supabase/functions/_shared/providers/`:
 - **Obter a chave:** https://console.x.ai (cadastre créditos/limite de gasto lá; a cobrança é na conta de quem criou a chave). Limites por tier (RPS/TPM): https://docs.x.ai/docs/key-information/consumption-and-rate-limits · preços: https://docs.x.ai/docs/models
 - **Não testado com chave real** (este projeto não tem chave xAI). Testado: classificação de erros e fallback com servidor HTTP local, e a chamada **real** à API da xAI com chave inválida (retorna 400 → `auth` → fallback).
 
+- **Ordem do Automático (por rank):** Groq (10…) e Gemini (12…21) → OpenRouter `:free` (22…) → **Pollinations por último** (90) → (xAI só com permissão). 404 “no longer available” é `bad_model` (cooldown de 6 h só desse modelo).
 - Provedores **sem chave aparecem como "não configurado"** na interface e são pulados.
 - Modo **Automático** escolhe o melhor elegível (por *rank*) e, em erro/timeout/429/5xx/401, **troca sozinho** para o próximo mantendo o contexto. Falha no meio da resposta descarta o parcial e recomeça no próximo.
 - **Circuit breaker:** após 429 (usa `Retry-After`/cabeçalhos `x-ratelimit-reset-*`), 401/403, 5xx ou timeout, o modelo/provedor entra em *cooldown* (tabela `provider_state`) e **não é chamado de novo** até expirar. Sem retentativas abusivas: no máximo 1 falha por provedor por requisição.
@@ -107,6 +108,7 @@ npm run build
 
 ## Testes
 - `npm test` — unitários (vitest): normalização/validação do código, geração sem viés, seleção/fallback/cooldown com mocks **e** com servidor HTTP local simulando 429/503/timeout/SSE; **xAI** (402/403/429, ordem no Automático, escolha manual, "não configurado", teto pago); **QR** (parse do link/dígitos, fragmento limpo, QR gerado e decodificado com jsQR).
+- `npm run test:gemini-real` — conversa REAL em produção com o login do dono (lê `owner_code.txt`, sem imprimir): confere que a resposta veio do Gemini (provider/model gravados), que com o Gemini em cooldown cai no Pollinations, e apaga a conversa. Gasta ~2 chamadas de chat grátis.
 - `npm run test:private-owner` — modelo privado em produção: `register`/`pow-challenge` 403 (nunca 429), dono único (2º dono → 409 e rejeição no banco), login do dono com `owner_code.txt`, dono não excluível, reset (código novo, antigo e sessões invalidados, mesmo usuário, histórico preservado) **em usuário de teste**, entrega criptografada sem código em texto puro. Cria usuários de teste pelo admin e os apaga.
 - `npm run test:integration` — integração contra as Edge Functions reais (cadastro fechado, usuários de teste via admin, login, sessões, isolamento A×B, acesso direto às tabelas com a chave anon, CORS, IA real, histórico, 2º dispositivo, memórias, fallback real, cotas esgotadas, resumo). Antes: `delete from public.rate_limits;`.
 - `npm run test:xai-qr` — integração real: xAI desligado/pago por padrão, preferência `allow_paid_auto`, `admin-set-key xai` (validação real), chamada real com chave inválida + fallback, `auth/verify-code`. Antes: `delete from public.rate_limits;`.

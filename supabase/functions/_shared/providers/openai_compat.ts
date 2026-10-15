@@ -16,6 +16,8 @@ export interface CompatConfig {
   chatUrl: string;
   /** URL de listagem de modelos (opcional) */
   modelsUrl?: string;
+  /** cabeçalhos de autenticação da listagem de modelos (padrão: Authorization: Bearer <chave>) */
+  modelsHeaders?: (key: string) => Record<string, string>;
   staticModels: ModelInfo[];
   /** transforma a listagem ao vivo (ids) em modelos elegíveis */
   fromLive?: (liveIds: string[], staticModels: ModelInfo[]) => ModelInfo[];
@@ -112,7 +114,7 @@ export class OpenAICompatProvider implements Provider {
     if (this.live && Date.now() - this.live.at < LIVE_TTL) return this.live.models;
     try {
       const headers: Record<string, string> = { ...(c.extraHeaders ?? {}) };
-      if (key) headers["Authorization"] = `Bearer ${key}`;
+      if (key) Object.assign(headers, c.modelsHeaders ? c.modelsHeaders(key) : { Authorization: `Bearer ${key}` });
       const r = await this.f()(c.modelsUrl, { headers, signal: AbortSignal.timeout(8000) });
       if (!r.ok) throw new Error(String(r.status));
       const j = await r.json();

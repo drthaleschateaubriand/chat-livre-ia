@@ -187,6 +187,8 @@ check("admin com token errado => 401", (await admin({ action: "status" }, "a".re
 if (ADMIN) {
   const st = await admin({ action: "status" });
   check("admin status com token correto", st.status === 200 && "groq" in (st.json.configured ?? {}), JSON.stringify(st.json));
+  // Gemini (chave real, plano grátis) fica pausado daqui em diante: preserva a cota grátis e mantém os cenários de fallback/cota determinísticos.
+  await admin({ action: "pause", provider: "gemini", seconds: 1800 });
   const bad = await admin({ action: "set", provider: "openrouter", key: "chave-invalida-de-teste-123" });
   check("chave inválida é recusada pela validação (422) e não é gravada", bad.status === 422, JSON.stringify(bad.json));
   section("Fallback REAL: OpenRouter com chave inválida (401) => cai para Pollinations");
@@ -274,6 +276,7 @@ check("login com a conta excluída falha", gone.status === 401);
 const bLogin = await call("auth", "login", { code: codeB0 });
 await call("data", "account.delete", { code: codeB0 }, bLogin.json.access_token);
 
+await admin({ action: "clear-cooldown", provider: "gemini" }); // devolve o Gemini ao Automático
 const cl = await cleanupTestUsers();
 check("usuários de teste restantes foram apagados (dono preservado)", cl.status === 200);
 summary();
