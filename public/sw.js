@@ -1,7 +1,7 @@
 /* Service worker do CHAT LIVRE IA. Escopo = subcaminho do app (/chat-livre-ia/).
  * Estratégia: navegação = rede primeiro (cai para o shell em cache offline); assets estáticos = cache primeiro.
  * Chamadas à API (Supabase) são de outra origem e NUNCA passam pelo cache. */
-const VERSION = "v1";
+const VERSION = "v2"; // aumente a cada mudança no SW: o activate apaga caches de versões antigas
 const CACHE = "chat-livre-ia-" + VERSION;
 const SCOPE = self.registration.scope; // ex.: https://.../chat-livre-ia/
 
@@ -22,7 +22,8 @@ self.addEventListener("fetch", (e) => {
   if (url.origin !== self.location.origin || !url.href.startsWith(SCOPE)) return; // só o próprio app
   if (req.mode === "navigate") {
     e.respondWith(
-      fetch(req).then((res) => { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(SCOPE, copy)); return res; }).catch(() => caches.match(SCOPE)),
+      // cache:'no-cache' = sempre revalida com o servidor (o GitHub Pages manda max-age=600: sem isto um index.html velho apontaria para assets já removidos)
+      fetch(new Request(req.url, { cache: "no-cache", credentials: "same-origin" })).then((res) => { if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(SCOPE, copy)); } return res; }).catch(() => caches.match(SCOPE)),
     );
     return;
   }

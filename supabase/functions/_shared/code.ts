@@ -4,9 +4,24 @@ export const CODE_LENGTH = 19;
 export const CODE_MIN = 18;
 export const CODE_MAX = 20;
 
-/** Remove espaços, hífens e pontos de formatação. Não remove outros caracteres (serão rejeitados). */
+const INVISIBLE = /[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufeff\ufe00-\ufe0f]/g;
+const SEPARATORS = /[\s\u00a0\-\u2010-\u2015\u2212.,_\u00b7'\u2019]/g;
+
+/**
+ * Tolerante ao que acontece ao COLAR/digitar no celular: remove espaços (inclusive NBSP), hífens/travessões, pontos, vírgulas,
+ * caracteres invisíveis (largura zero, marcas de direção, BOM) e converte dígitos de largura total e árabe-índicos para 0-9.
+ * Outros caracteres (letras etc.) NÃO são removidos: serão rejeitados por validateCode.
+ */
 export function normalizeCode(input: string): string {
-  return String(input ?? "").replace(/[\s\u00a0\-\u2010-\u2015.]/g, "");
+  let s = String(input ?? "");
+  try { s = s.normalize("NFKC"); } catch { /* ambiente sem normalize */ }
+  s = s.replace(INVISIBLE, "").replace(/[\u0660-\u0669]/g, (c) => String(c.charCodeAt(0) - 0x0660)).replace(/[\u06f0-\u06f9]/g, (c) => String(c.charCodeAt(0) - 0x06f0));
+  return s.replace(SEPARATORS, "");
+}
+
+/** Extrai só os dígitos de um texto colado/digitado (ex.: "Meu código: 1234 5678 …"), no máximo `max`. */
+export function digitsOnly(input: string, max = CODE_MAX): string {
+  return normalizeCode(input).replace(/\D/g, "").slice(0, max);
 }
 
 function digitsOf(code: string): number[] {

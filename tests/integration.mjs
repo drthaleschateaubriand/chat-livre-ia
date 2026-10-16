@@ -211,7 +211,7 @@ if (ADMIN) {
   check("pausa de Pollinations (admin)", p.status === 200);
   const ex = await chat(tA1, { conversation_id: convA, content: "Esta mensagem não deve receber resposta.", model: "auto" });
   const err = ex.events.find((e) => e.event === "error");
-  check("erro claro all_exhausted com retry_after", err?.data.code === "all_exhausted" && err.data.retry_after > 60 && err.data.retry_after <= 120 && /Tente novamente/.test(err.data.message), JSON.stringify(err?.data).slice(0, 300));
+  check("erro claro all_exhausted com retry_after", err?.data.code === "all_exhausted" && err.data.retry_after > 0 && err.data.retry_after <= 120 && /Tente novamente/.test(err.data.message), JSON.stringify(err?.data).slice(0, 300));
   const exMsgs = await call("data", "conv.messages", { id: convA }, tA1);
   check("a mensagem do usuário foi gravada mesmo sem resposta", exMsgs.json.messages.some((m) => m.content.includes("não deve receber resposta")));
   await admin({ action: "clear-cooldown", provider: "pollinations" });

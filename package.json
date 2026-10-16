@@ -19,7 +19,8 @@
     "test:e2e-agents": "node tests/e2e-agents.mjs",
     "test:private-owner": "node tests/private-owner.mjs",
     "test:e2e-qr": "node tests/e2e-qr.mjs",
-    "test:e2e": "node tests/e2e.mjs"
+    "test:e2e": "node tests/e2e.mjs",
+    "test:login-inputs": "node tests/login-inputs.mjs"
   },
   "dependencies": {
     "highlight.js": "^11.12.0",

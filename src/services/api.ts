@@ -96,7 +96,8 @@ async function authed(path: string, body: unknown, init: RequestInit = {}, retry
 
 export async function post(fn: string, action: string, body: Record<string, unknown> = {}, auth = true) {
   if (!auth) {
-    return parse(await fetch(`${FN}/${fn}/${action}`, { method: 'POST', headers: baseHeaders(), body: JSON.stringify(body) }))
+    // timeout explícito: sem ele uma rede travada deixaria o botão em "Entrando…" para sempre
+    return parse(await fetch(`${FN}/${fn}/${action}`, { method: 'POST', headers: baseHeaders(), body: JSON.stringify(body), signal: AbortSignal.timeout(25_000) }))
   }
   return parse(await authed(fn === 'data' ? 'data' : `${fn}/${action}`, fn === 'data' ? { action, ...body } : body))
 }

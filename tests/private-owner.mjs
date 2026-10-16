@@ -87,6 +87,10 @@ check("o código recebido via script cifrado faz login (e o anterior não)", (aw
 const wf = readFileSync(join(ROOT, "docs/reset-owner-workflow.yml"), "utf8");
 check("workflow só usa o script cifrado (não imprime código; sem 'echo' do segredo/código)", /reset-owner-encrypted\.sh/.test(wf) && !/cat .*owner|echo .*code|set -x/i.test(wf) && /workflow_dispatch/.test(wf) && /secrets\.ADMIN_TOKEN/.test(wf));
 
+// ATENÇÃO: este bloco TROCA o código do dono real (e invalida o que o dono já anotou). Só roda com opt-in explícito:
+//   ALLOW_REAL_OWNER_RESET=1 node tests/private-owner.mjs
+// Por padrão é PULADO, para uma rodada de regressão nunca invalidar o código que o dono está usando.
+if (process.env.ALLOW_REAL_OWNER_RESET === "1") {
 section("Reset LOCAL em texto puro (scripts/reset-owner.sh) no DONO REAL, com histórico preservado");
 // registro temporário na conta real (será apagado)
 const before = readFileSync(OWNER_FILE, "utf8").trim();
@@ -113,6 +117,13 @@ await call("data", "conv.delete", { id: ocId }, nl2.json.access_token);
 check("conversa temporária apagada (dono volta ao estado anterior)", !(await call("data", "conv.list", {}, nl2.json.access_token)).json.conversations.some((c) => c.id === ocId));
 await call("auth", "logout", {}, nl2.json.access_token);
 check("dono continua sendo o único (owner-status)", (await admin({ action: "owner-status" })).json.owner_exists === true);
+
+} else {
+  console.log("\n(pulado) reset no DONO REAL: defina ALLOW_REAL_OWNER_RESET=1 para executar. O código do dono NÃO foi alterado.");
+  const keep = await login(readFileSync(OWNER_FILE, "utf8").trim(), { device_name: "teste-sem-reset" });
+  check("sem opt-in, o código atual em owner_code.txt continua valendo (não foi trocado)", keep.status === 200);
+  if (keep.status === 200) await call("auth", "logout", {}, keep.json.access_token);
+}
 
 await cleanupTestUsers();
 const cleanup = await admin({ action: "owner-status" });

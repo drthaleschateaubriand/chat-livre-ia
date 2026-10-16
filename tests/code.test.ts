@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { digitsFromRandom, formatCode, generateCode, isPredictable, normalizeCode, validateCode } from '../supabase/functions/_shared/code.ts'
+import { digitsFromRandom, digitsOnly, formatCode, generateCode, isPredictable, normalizeCode, validateCode } from '../supabase/functions/_shared/code.ts'
 import { randomBytes } from 'node:crypto'
 
 describe('normalizeCode', () => {
@@ -75,5 +75,28 @@ describe('generateCode', () => {
 describe('formatCode', () => {
   it('agrupa de 4 em 4', () => {
     expect(formatCode('4827193650728413659')).toBe('4827 1936 5072 8413 659')
+  })
+})
+
+describe('normalizeCode / digitsOnly (colar no celular)', () => {
+  const C = '4829175036481927301'
+  it('tolera espaços, hífens, travessões, NBSP, quebras de linha e espaços no fim', () => {
+    for (const v of ['4829 1750 3648 1927 301', '4829-1750-3648-1927-301', '4829–1750–3648–1927–301', '4829\u00a01750\u00a03648\u00a01927\u00a0301', ` ${C}\n`, `\t${C} \r\n`]) expect(normalizeCode(v)).toBe(C)
+  })
+  it('remove caracteres invisíveis (largura zero, marcas de direção, BOM, soft hyphen)', () => {
+    expect(normalizeCode(`\ufeff48\u200b29\u200e 1750\u202c3648\u00ad1927\u2060301\u200f`)).toBe(C)
+  })
+  it('converte dígitos de largura total e árabe-índicos', () => {
+    expect(normalizeCode('４８２９１７５０３６４８１９２７３０１')).toBe(C)
+    expect(normalizeCode('٤٨٢٩١٧٥٠٣٦٤٨١٩٢٧٣٠١')).toBe(C)
+  })
+  it('digitsOnly extrai o código de um texto colado e limita a 20 dígitos', () => {
+    expect(digitsOnly('Meu código: 4829 1750 3648 1927 301 (guarde)')).toBe(C)
+    expect(digitsOnly(C + '123456').length).toBe(20)
+  })
+  it('validateCode aceita as variações coladas e continua rejeitando letras', () => {
+    expect(validateCode(`\u200b4829 1750-3648\u00a01927 301 \n`)).toEqual({ ok: true, code: C })
+    expect(validateCode('4829 1750 3648 1927 30a').ok).toBe(false)
+    expect(validateCode('4829 1750 3648 19').ok).toBe(false)
   })
 })

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { formatCode, normalizeCode, validateCode } from '../lib/code'
+import { digitsOnly, formatCode, normalizeCode, validateCode } from '../lib/code'
+import { describeLoginError } from '../lib/loginError'
 import * as auth from '../services/auth'
-import { ApiError } from '../services/api'
 import { consumeLink } from '../lib/qr'
 import { QrScanner } from './QrScanner'
 
@@ -11,6 +11,7 @@ export function AuthScreen() {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
 
+  const digitCount = normalizeCode(code).length
   const [scanning, setScanning] = useState(false)
   const [linking, setLinking] = useState(false)
 
@@ -20,8 +21,7 @@ export function AuthScreen() {
     try {
       await auth.login(c, keep)
     } catch (ex) {
-      if (ex instanceof ApiError && ex.status === 429) setErr(`Muitas tentativas. Aguarde ${Math.ceil((ex.retryAfter ?? 60) / 60)} min e tente de novo.`)
-      else setErr(ex instanceof Error ? ex.message : 'Falha ao entrar.')
+      setErr(describeLoginError(ex).message)
     } finally { setBusy(false); setLinking(false) }
   }
 
@@ -51,9 +51,12 @@ export function AuthScreen() {
         </div>
         <form onSubmit={doLogin} className="space-y-3">
             <label className="block text-sm font-medium" htmlFor="code">Seu código de 19 dígitos</label>
-            <input id="code" data-testid="code-input" inputMode="numeric" pattern="[0-9 \-]*" autoComplete="off" autoCorrect="off" spellCheck={false}
-              value={code} onChange={(e) => setCode(formatCode(e.target.value.replace(/[^\d\s-]/g, '')))} placeholder="0000 0000 0000 0000 000" maxLength={30}
+            <input id="code" data-testid="code-input" type="text" inputMode="numeric" enterKeyHint="go" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+              value={code} onChange={(e) => setCode(formatCode(digitsOnly(e.target.value)))} placeholder="0000 0000 0000 0000 000"
               className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-3 text-center font-mono text-lg tracking-wider outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 dark:border-zinc-700 dark:bg-zinc-950" />
+            <p data-testid="digit-count" aria-live="polite" className="min-h-[1.25rem] text-center text-xs text-zinc-500">
+              {digitCount === 0 ? '' : digitCount < 18 ? `${digitCount} de 19 dígitos — faltam ${19 - digitCount}` : digitCount === 19 ? '19 dígitos ✓' : `${digitCount} dígitos`}
+            </p>
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={keep} onChange={(e) => setKeep(e.target.checked)} className="h-4 w-4" /> Manter conectado neste dispositivo (30 dias)</label>
             {linking && <p role="status" data-testid="qr-linking" className="rounded-md bg-indigo-50 p-2 text-sm text-indigo-800 dark:bg-indigo-950 dark:text-indigo-200">Entrando com o link do QR code…</p>}
             {err && <p role="alert" className="rounded-md bg-red-50 p-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">{err}</p>}

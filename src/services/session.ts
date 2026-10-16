@@ -2,6 +2,8 @@ import type { SessionTokens } from '../types'
 
 const KEY = 'cli.session'
 const listeners = new Set<() => void>()
+/** Último recurso quando o navegador bloqueia localStorage/sessionStorage (ex.: alguns modos privados): vale só nesta aba. */
+let memory: SessionTokens | null = null
 
 function read(store: Storage): SessionTokens | null {
   try {
@@ -14,20 +16,35 @@ function read(store: Storage): SessionTokens | null {
 
 /** Sessão persistente fica em localStorage ("manter conectado"); sessão curta em sessionStorage. */
 export function loadSession(): SessionTokens | null {
-  return read(localStorage) ?? read(sessionStorage)
+  let ls: SessionTokens | null = null
+  let ss: SessionTokens | null = null
+  try { ls = read(localStorage) } catch { /* bloqueado */ }
+  try { ss = read(sessionStorage) } catch { /* bloqueado */ }
+  return ls ?? ss ?? memory
 }
 
 export function saveSession(t: SessionTokens) {
-  const keep = t.persistent ? localStorage : sessionStorage
-  const other = t.persistent ? sessionStorage : localStorage
-  other.removeItem(KEY)
-  keep.setItem(KEY, JSON.stringify(t))
+  const raw = JSON.stringify(t)
+  const order = t.persistent ? ['local', 'session'] : ['session', 'local']
+  let saved = false
+  for (const which of order) {
+    try {
+      const st = which === 'local' ? localStorage : sessionStorage
+      const other = which === 'local' ? sessionStorage : localStorage
+      st.setItem(KEY, raw)
+      try { other.removeItem(KEY) } catch { /* ignora */ }
+      saved = true
+      break
+    } catch { /* cota/bloqueio: tenta o próximo armazenamento */ }
+  }
+  memory = saved ? null : t // sem armazenamento: mantém só em memória (a sessão some ao fechar a aba)
   listeners.forEach((l) => l())
 }
 
 export function clearSession() {
-  localStorage.removeItem(KEY)
-  sessionStorage.removeItem(KEY)
+  memory = null
+  try { localStorage.removeItem(KEY) } catch { /* ignora */ }
+  try { sessionStorage.removeItem(KEY) } catch { /* ignora */ }
   listeners.forEach((l) => l())
 }
 
